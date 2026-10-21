@@ -43,7 +43,7 @@ jobs:
       tag: ${{ steps.release.outputs.tag_name }}
     steps:
       - id: release
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@v5
         with:
           # Pull requests opened with the default token don't start CI. Add a fine-grained token
           # (contents + pull requests: read and write) as RELEASE_PLEASE_TOKEN to get CI on them.
@@ -63,7 +63,7 @@ jobs:
       TAG: ${{ needs.release-please.outputs.tag || inputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
 
