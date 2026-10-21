@@ -1,0 +1,3 @@
+[env]
+# libghostty-vt builds Ghostty with Zig; its Debug mode is very slow at runtime.
+LIBGHOSTTY_VT_SYS_OPTIMIZE = "ReleaseFast"

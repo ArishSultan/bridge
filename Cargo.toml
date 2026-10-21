@@ -1,0 +1,68 @@
+[package]
+name = "bridge"
+version = "0.1.0"
+edition = "2024"
+description = "A workspace of projects, terminals, SSH servers and port forwards, built on gpui and libghostty-vt"
+publish = false
+
+# Capitalized: macOS shows the executable's name in the menu bar when it runs outside the app bundle.
+[[bin]]
+name = "Bridge"
+path = "src/main.rs"
+
+[dependencies]
+# gpui-component 0.7.3 pins this exact gpui snapshot (published as `gpui-pre`, lib name `gpui`).
+gpui = { package = "gpui-pre", version = "=0.3.9" }
+# The platform half of the same gpui snapshot: provides `application()`. `font-kit` is required
+# for text rendering on macOS.
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["font-kit", "runtime_shaders"] }
+gpui-component = "0.7.3"
+# The unstyled layer under gpui-component (its version must match): the app draws its own sheet
+# on gpui-base's sheet host and animates values with its `transition` / `Presence` helpers.
+gpui-base = "=0.7.3"
+# Lucide icon SVGs (ISC license) used by gpui-component's `IconName`.
+gpui-kit-assets = "=0.7.3"
+libghostty-vt = { version = "0.2.2", default-features = false }
+# Shell process: PTY spawning, a channel from the PTY reader thread to the UI, and persisted settings.
+portable-pty = "0.9"
+# Naming the PTY's foreground process for the window title.
+libc = "0.2"
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Emoji names and categories for the group icon picker.
+emojis = "0.9.1"
+# Rasterizes multi-color custom group icons (same version and features as gpui uses).
+resvg = { version = "0.46", default-features = false, features = ["text", "system-fonts"] }
+# Saved SSH passwords, in the macOS Keychain.
+keyring = { version = "3", features = ["apple-native"] }
+# Vaultwarden (Bitwarden protocol): KDFs, key stretching and EncString decryption, all in memory.
+pbkdf2 = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+hkdf = "0.12"
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+argon2 = "0.5"
+base64 = "0.22"
+zeroize = { version = "1", features = ["derive"] }
+# `native-certs`: trust what macOS trusts, so a self-hosted server signed by your own CA works.
+ureq = { version = "2", features = ["json", "native-certs"] }
+# A stable device id for the vault server, so each unlock is not a "new device".
+uuid = { version = "1", features = ["v4"] }
+
+# GPUI is very slow in debug builds; optimize the heavy dependencies even in dev.
+[profile.dev.package.gpui-pre]
+opt-level = 3
+[profile.dev.package.gpui-pre-platform]
+opt-level = 3
+[profile.dev.package.gpui-component]
+opt-level = 3
+[profile.dev.package.gpui-base]
+opt-level = 3
+[profile.dev.package.taffy]
+opt-level = 3
+[profile.dev.package.rustybuzz]
+opt-level = 3
+[profile.dev.package.ttf-parser]
+opt-level = 3

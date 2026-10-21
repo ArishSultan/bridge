@@ -1,0 +1,126 @@
+# Releases, driven by release-please:
+#
+# 1. Every push to main updates a "Release v<next>" pull request. It bumps the version in
+#    Cargo.toml and Cargo.lock and adds the changes to CHANGELOG.md, from the Conventional Commit
+#    messages since the last release (`feat:` → minor, `fix:` → patch, `feat!:` → breaking).
+# 2. Merging that pull request tags the commit (v<version>) and publishes a GitHub release with
+#    those notes.
+# 3. The build job then makes an Apple Silicon Bridge.app and attaches it to the release as a .dmg
+#    and a .zip, with SHA-256 sums.
+#
+# The app is ad-hoc signed, not notarized (no Apple Developer certificate), so the release notes
+# say how to open it the first time.
+#
+# Run this workflow by hand with a tag to rebuild and re-attach the files of an existing release.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to rebuild the app for (like v0.2.0)
+        required: true
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-please:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          # Pull requests opened with the default token don't start CI. Add a fine-grained token
+          # (contents + pull requests: read and write) as RELEASE_PLEASE_TOKEN to get CI on them.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build:
+    needs: release-please
+    # `always()` lets a manual run go ahead although release-please was skipped.
+    if: >-
+      always() &&
+      (needs.release-please.outputs.created == 'true' || github.event_name == 'workflow_dispatch')
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      TAG: ${{ needs.release-please.outputs.tag || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+
+      - name: Check the tag matches Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::Cargo.toml says $version but the tag is $TAG"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Build Bridge.app
+        run: ./scripts/bundle.sh
+
+      - name: Check the app
+        run: |
+          lipo -verify_arch arm64 target/release/bundle/Bridge.app/Contents/MacOS/Bridge
+          codesign --verify --deep --strict target/release/bundle/Bridge.app
+
+      - name: Package
+        run: ./scripts/package.sh "$VERSION"
+
+      - name: Attach to the release
+        run: gh release upload "$TAG" target/release/dist/* --clobber
+
+      - name: Add install notes
+        run: |
+          notes=$(gh release view "$TAG" --json body --jq .body)
+          case "$notes" in *"<!-- install -->"*) exit 0 ;; esac
+          cat > install.md <<'NOTES'
+
+          <!-- install -->
+          ### Install
+
+          Download the `.dmg`, open it and drag **Bridge** to Applications. It runs on Apple Silicon
+          Macs (M1 or later) with macOS 13 or later.
+
+          Bridge isn't notarized by Apple, so macOS blocks it the first time you open it. Either run
+
+          ```sh
+          xattr -dr com.apple.quarantine /Applications/Bridge.app
+          ```
+
+          or try to open it once, then click **Open Anyway** in System Settings → Privacy & Security.
+
+          Check the download against `SHA256SUMS.txt` with `shasum -a 256 -c --ignore-missing SHA256SUMS.txt`.
+          NOTES
+          printf '%s\n' "$notes" | cat - install.md > notes.md
+          gh release edit "$TAG" --notes-file notes.md

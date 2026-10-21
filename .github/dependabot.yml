@@ -1,0 +1,13 @@
+# Keep the workflows' actions up to date. Cargo dependencies are left alone: gpui and
+# gpui-component are pinned to versions that must move together.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ["*"]
