@@ -91,7 +91,7 @@ jobs:
 
       - name: Check the app
         run: |
-          lipo -verify_arch arm64 target/release/bundle/Bridge.app/Contents/MacOS/Bridge
+          lipo target/release/bundle/Bridge.app/Contents/MacOS/Bridge -verify_arch arm64
           codesign --verify --deep --strict target/release/bundle/Bridge.app
 
       - name: Package
