@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/ArishSultan/bridge/compare/v0.1.1...v0.2.0) (2026-10-22)
+
+
+### Features
+
+* app icon from Icon Composer ([47cd219](https://github.com/ArishSultan/bridge/commit/47cd219b100b1abbd82573c46236981e9df22a69))
+
 ## [0.1.1](https://github.com/ArishSultan/bridge/compare/v0.1.0...v0.1.1) (2026-10-21)
 
 
