@@ -15,6 +15,10 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cargo build --release
 cp target/release/Bridge "$app/Contents/MacOS/Bridge"
 
+# The icon: Assets.car is the Icon Composer icon for macOS 26, the .icns is the fallback for older
+# versions. Both come from scripts/icon.sh.
+cp assets/Assets.car assets/BridgeIcon.icns "$app/Contents/Resources/"
+
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -28,6 +32,10 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <string>dev.arish.bridge</string>
     <key>CFBundleExecutable</key>
     <string>Bridge</string>
+    <key>CFBundleIconFile</key>
+    <string>BridgeIcon</string>
+    <key>CFBundleIconName</key>
+    <string>BridgeIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
