@@ -34,6 +34,9 @@ runs:
       uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
       with:
         version: 0.15.2
+        # Zig's own cache from another runner image can point at an SDK this one doesn't have,
+        # and then Zig's build program fails to link. The built library is cached above instead.
+        use-cache: false
 
     - name: Build
       if: steps.cache.outputs.cache-hit != 'true'
