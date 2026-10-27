@@ -6,6 +6,35 @@ over to your machines (see *Next*), without being handed your keys.
 
 Short notes on what we chose and why.
 
+## v2: Swift and libghostty
+
+**Swift instead of Rust.** v2 is a native macOS app: SwiftUI and AppKit for the windows, so the app
+gets what macOS offers (input methods, menus, settings windows, system materials) without going
+through gpui.
+
+**libghostty renders the terminals, not SwiftUI.** SwiftUI isn't a fast way to draw a terminal
+grid: Text and Canvas lay out on the CPU. Fast terminals draw the grid on the GPU with a glyph
+atlas, which is what libghostty's Metal renderer does. v1 used only libghostty-vt (the parser and
+screen) and drew the grid itself; v2 embeds all of libghostty, the same embedding API Ghostty's own
+macOS app is built on. Each terminal gets its own pty, I/O thread and renderer thread drawing into
+a Metal layer, synced to the display, so a terminal flooding output never holds up the others or
+the window. SwiftUI only draws the chrome around them.
+
+**One module talks to C.** Only `Sources/BridgeTerm` calls libghostty's C API. That API is
+internal to Ghostty and changes between versions, so Ghostty is pinned as a submodule
+(v1.3.1, the newest that builds with Zig 0.15) and moving it is a deliberate change. Fixes the
+pinned release needs from newer Ghostty sit in `patches/ghostty` (so far: the libtool archive fix
+needed with Xcode 27).
+
+**Settings become a Ghostty config.** Bridge's settings are turned into a Ghostty config
+(`TerminalConfig`) and applied to every open terminal at once. Keybindings stay at Ghostty's macOS
+defaults; the actions they produce (split, new tab, move focus) are handled by the app.
+
+**Same settings file.** v2 reads and writes v1's `settings.json` with the same keys, and keeps keys
+it doesn't use yet, so going back and forth between versions loses nothing.
+
+## v1
+
 ## The product
 
 **A window per project.** A project is a folder, opened in a window of its own, once. The Global

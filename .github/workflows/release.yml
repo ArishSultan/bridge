@@ -1,7 +1,7 @@
 # Releases, driven by release-please:
 #
 # 1. Every push to main updates a "Release v<next>" pull request. It bumps the version in
-#    Cargo.toml and Cargo.lock and adds the changes to CHANGELOG.md, from the Conventional Commit
+#    version.txt and adds the changes to CHANGELOG.md, from the Conventional Commit
 #    messages since the last release (`feat:` → minor, `fix:` → patch, `feat!:` → breaking).
 # 2. Merging that pull request tags the commit (v<version>) and publishes a GitHub release with
 #    those notes.
@@ -30,9 +30,6 @@ concurrency:
 permissions:
   contents: write
   pull-requests: write
-
-env:
-  CARGO_TERM_COLOR: always
 
 jobs:
   release-please:
@@ -66,22 +63,15 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.TAG }}
+          submodules: true
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
+      - uses: ./.github/actions/libghostty
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release
-
-      - name: Check the tag matches Cargo.toml
+      - name: Check the tag matches version.txt
         run: |
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          version=$(cat version.txt)
           if [ "v$version" != "$TAG" ]; then
-            echo "::error::Cargo.toml says $version but the tag is $TAG"
+            echo "::error::version.txt says $version but the tag is $TAG"
             exit 1
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
@@ -91,14 +81,14 @@ jobs:
 
       - name: Check the app
         run: |
-          lipo target/release/bundle/Bridge.app/Contents/MacOS/Bridge -verify_arch arm64
-          codesign --verify --deep --strict target/release/bundle/Bridge.app
+          lipo build/Bridge.app/Contents/MacOS/Bridge -verify_arch arm64
+          codesign --verify --deep --strict build/Bridge.app
 
       - name: Package
         run: ./scripts/package.sh "$VERSION"
 
       - name: Attach to the release
-        run: gh release upload "$TAG" target/release/dist/* --clobber
+        run: gh release upload "$TAG" build/dist/* --clobber
 
       - name: Add install notes
         run: |
@@ -110,7 +100,7 @@ jobs:
           ### Install
 
           Download the `.dmg`, open it and drag **Bridge** to Applications. It runs on Apple Silicon
-          Macs (M1 or later) with macOS 13 or later.
+          Macs (M1 or later) with macOS 15 or later.
 
           Bridge isn't notarized by Apple, so macOS blocks it the first time you open it. Either run
 

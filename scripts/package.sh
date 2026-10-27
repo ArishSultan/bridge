@@ -1,14 +1,14 @@
 #!/bin/sh
 # Package a built Bridge.app for a release: a disk image, a zip and their SHA-256 sums, in
-# target/release/dist/. Run scripts/bundle.sh first.
+# build/dist/. Run scripts/bundle.sh first.
 #
 #   ./scripts/package.sh 0.2.0
 set -eu
 
 cd "$(dirname "$0")/.."
 version="$1"
-app="target/release/bundle/Bridge.app"
-dist="target/release/dist"
+app="build/Bridge.app"
+dist="build/dist"
 dmg="$dist/Bridge-$version-macos-arm64.dmg"
 zip="$dist/Bridge-$version-macos-arm64.zip"
 

@@ -1,0 +1,38 @@
+# Build libghostty from the pinned vendor/ghostty submodule, or restore it from the cache: it only
+# changes when the submodule, its patches or the build script do.
+name: libghostty
+description: Build or restore vendor/GhosttyKit.xcframework and vendor/share
+
+runs:
+  using: composite
+  steps:
+    - name: Cache key
+      id: key
+      shell: bash
+      run: |
+        commit=$(git rev-parse HEAD:vendor/ghostty)
+        inputs=$(cat patches/ghostty/*.patch scripts/build-ghostty.sh | shasum -a 256 | cut -c1-16)
+        echo "key=ghostty-$commit-$inputs" >> "$GITHUB_OUTPUT"
+
+    - name: Restore
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          vendor/GhosttyKit.xcframework
+          vendor/share
+        key: ${{ steps.key.outputs.key }}
+
+    - name: Install Zig
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: mlugg/setup-zig@v2
+      with:
+        version: 0.15.2
+
+    - name: Build
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        # Ghostty's shaders need the Metal compiler, a separate download on newer Xcode.
+        xcrun -sdk macosx metal --version >/dev/null 2>&1 || xcodebuild -downloadComponent MetalToolchain
+        ./scripts/build-ghostty.sh

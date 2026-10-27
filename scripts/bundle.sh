@@ -1,19 +1,27 @@
 #!/bin/sh
-# Build the app and wrap it in a macOS app bundle: target/release/bundle/Bridge.app.
+# Build the app and wrap it in a macOS app bundle: build/Bridge.app.
 # Copy it to /Applications to launch it from Spotlight, Launchpad or the Dock.
+# Run scripts/build-ghostty.sh first (once, and after updating vendor/ghostty).
 # Builds for Apple Silicon (run it on an Apple Silicon Mac).
 set -eu
 
 cd "$(dirname "$0")/.."
 name="Bridge"
-version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+version=$(cat version.txt)
 
-app="target/release/bundle/$name.app"
+[ -d vendor/GhosttyKit.xcframework ] || { echo "No libghostty; run scripts/build-ghostty.sh first." >&2; exit 1; }
+
+swift build -c release --arch arm64
+bin=$(swift build -c release --arch arm64 --show-bin-path)
+
+app="build/$name.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+cp "$bin/Bridge" "$app/Contents/MacOS/Bridge"
 
-cargo build --release
-cp target/release/Bridge "$app/Contents/MacOS/Bridge"
+# libghostty's resources: terminfo (xterm-ghostty) and the shell integration scripts. It finds
+# them by looking for Contents/Resources/terminfo in the bundle it runs from.
+cp -R vendor/share/ghostty vendor/share/terminfo "$app/Contents/Resources/"
 
 # The icon: Assets.car is the Icon Composer icon for macOS 26, the .icns is the fallback for older
 # versions. Both come from scripts/icon.sh.
@@ -43,7 +51,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>CFBundleVersion</key>
     <string>$version</string>
     <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
+    <string>15.0</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key>
