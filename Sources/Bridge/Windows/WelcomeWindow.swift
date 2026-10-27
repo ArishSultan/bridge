@@ -21,6 +21,9 @@ struct WelcomeWindow: View {
                 Text("Terminals your agents can't escape")
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                UpdateBadge()
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
                 Spacer()
                 VStack(spacing: 8) {
                     Button {

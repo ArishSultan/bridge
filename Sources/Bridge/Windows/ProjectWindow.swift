@@ -256,6 +256,14 @@ private struct ProjectToolbar: ToolbarContent {
             .disabled(controller.focusedPane == nil)
         }
 
+        if Updates.shared.pending != nil {
+            ToolbarItem {
+                UpdateBadge()
+                    .labelStyle(.titleAndIcon)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+
         if !controller.isGlobal {
             ToolbarItem {
                 Button("Home", systemImage: "house") { store.openGlobal() }

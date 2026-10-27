@@ -87,6 +87,10 @@ cat > "$app/Contents/Info.plist" <<PLIST
     </array>
     <key>SUFeedURL</key>
     <string>https://github.com/ArishSultan/bridge/releases/latest/download/appcast.xml</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>3600</integer>
     <key>SUPublicEDKey</key>
     <string>${SPARKLE_PUBLIC_KEY:-}</string>
 </dict>

@@ -108,7 +108,9 @@ struct BridgeCommands: Commands {
     var body: some Commands {
         if Updates.shared.available {
             CommandGroup(after: .appInfo) {
-                Button("Check for Updates…") { Updates.shared.checkForUpdates() }
+                Button(Updates.shared.pending.map { "Install Bridge \($0)…" } ?? "Check for Updates…") {
+                    Updates.shared.checkForUpdates()
+                }
             }
         }
 
