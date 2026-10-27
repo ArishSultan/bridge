@@ -1,7 +1,7 @@
 import Foundation
 
-/// Projects and their terminals and views, stored in `~/.config/bridge/projects.json` in the same
-/// format as v1.
+/// Projects and their terminals and views. Stored in the app's data store (`Persistence`); the
+/// JSON coding below reads v1's `~/.config/bridge/projects.json` once, when v2 first starts.
 ///
 /// A project is a folder. Its items are terminals or views (a grid of terminals, a split layout);
 /// each terminal is described by a `TerminalSpec`: a shell, a task bound to one command, or an SSH
@@ -275,8 +275,13 @@ public struct Project: Equatable, Sendable, Identifiable {
     public var views: [ProjectItem] = []
     /// The item on screen.
     public var active: ID?
+    /// When its window was last opened, for the Welcome window's recent projects.
+    public var lastOpened: Date?
+    /// Its window's frame (`NSStringFromRect`), to reopen it where it was.
+    public var windowFrame: String?
 
-    public init(id: ID, name: String, dir: String, icon: String? = nil, color: String? = nil, views: [ProjectItem] = [], active: ID? = nil) {
+    public init(id: ID, name: String, dir: String, icon: String? = nil, color: String? = nil, views: [ProjectItem] = [],
+                active: ID? = nil, lastOpened: Date? = nil, windowFrame: String? = nil) {
         self.id = id
         self.name = name
         self.dir = dir
@@ -284,6 +289,8 @@ public struct Project: Equatable, Sendable, Identifiable {
         self.color = color
         self.views = views
         self.active = active
+        self.lastOpened = lastOpened
+        self.windowFrame = windowFrame
     }
 
     public var root: URL { URL(fileURLWithPath: Paths.expandHome(dir)) }
@@ -337,6 +344,35 @@ public struct Projects: Equatable, Sendable {
     private var counter: ID = 1
 
     public init() {}
+
+    /// Projects as stored.
+    public init(projects: [Project], global: Project?, open: [ID], globalOpen: Bool, sidebarOpen: Bool, nextID: ID) {
+        self.projects = projects
+        self.global = global
+        self.open = open
+        self.globalOpen = globalOpen
+        self.sidebarOpen = sidebarOpen
+        counter = nextID
+        normalize()
+    }
+
+    /// The next id `nextID()` hands out.
+    public var nextFreeID: ID { counter }
+
+    /// Every terminal keeps running when its item is left (what "Keep alive" did), as new ones do.
+    public mutating func keepAllAlive() {
+        func keep(_ project: inout Project) {
+            for index in project.views.indices {
+                for pane in project.views[index].panes {
+                    guard var spec = project.views[index].terminal(pane) else { continue }
+                    spec.background = true
+                    project.views[index].layout.setTerminal(pane, spec)
+                }
+            }
+        }
+        for index in projects.indices { keep(&projects[index]) }
+        if var global { keep(&global); self.global = global }
+    }
 
     /// The Global window's project, made the first time it is needed.
     @discardableResult
@@ -401,23 +437,17 @@ public struct Projects: Equatable, Sendable {
     }
 }
 
-// MARK: - Disk
+// MARK: - v1's file
 
 extension Projects {
+    /// v1's file, read once into the data store.
     public static var fileURL: URL { Settings.configDirectory.appendingPathComponent("projects.json") }
 
-    /// Load from disk; a missing or unreadable file gives an empty list.
-    public static func load(from url: URL = fileURL) -> Projects {
-        var projects = (try? JSONDecoder().decode(Projects.self, from: Data(contentsOf: url))) ?? Projects()
+    /// v1's `projects.json`. Throws when it can't be read, so it is never taken for an empty list.
+    public static func decodeV1(_ data: Data) throws -> Projects {
+        var projects = try JSONDecoder().decode(Projects.self, from: data)
         projects.normalize()
         return projects
-    }
-
-    public func save(to url: URL = fileURL) throws {
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
-        try encoder.encode(self).write(to: url, options: .atomic)
     }
 }
 

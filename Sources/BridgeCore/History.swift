@@ -1,6 +1,7 @@
 import Foundation
 
-/// One command run in a terminal, as stored in `~/.config/bridge/history.jsonl` (v1's format).
+/// One command run in a terminal. Coded as a line of v1's `~/.config/bridge/history.jsonl`, which
+/// is read once into the data store.
 public struct HistoryEntry: Codable, Equatable, Sendable {
     public var command: String
     public var cwd: String?
@@ -52,21 +53,27 @@ public struct HistoryEntry: Codable, Equatable, Sendable {
     }
 }
 
-/// Every command run in Bridge's terminals, plus (optionally) the shell's own history.
+/// Every command run in Bridge's terminals, plus (optionally) the shell's own history. In memory;
+/// the app stores what it records (`Persistence`).
 public struct History: Sendable {
     /// Oldest first.
     public private(set) var entries: [HistoryEntry] = []
-    private let file: URL?
 
+    /// v1's file, read once into the data store.
     public static var fileURL: URL { Settings.configDirectory.appendingPathComponent("history.jsonl") }
 
-    public init(entries: [HistoryEntry] = [], file: URL? = nil) {
+    public init(entries: [HistoryEntry] = []) {
         self.entries = entries
-        self.file = file
     }
 
-    /// Load recorded history, preceded by the shell's own history files when asked.
-    public static func load(importShellHistory: Bool, file: URL = fileURL, home: URL = URL(fileURLWithPath: Paths.home)) -> History {
+    /// The lines of v1's `history.jsonl` that can be read.
+    public static func readV1(_ text: String) -> [HistoryEntry] {
+        let decoder = JSONDecoder()
+        return text.split(separator: "\n").compactMap { try? decoder.decode(HistoryEntry.self, from: Data($0.utf8)) }
+    }
+
+    /// The recorded history (oldest first), preceded by the shell's own history files when asked.
+    public static func load(importShellHistory: Bool, recorded: [HistoryEntry], home: URL = URL(fileURLWithPath: Paths.home)) -> History {
         var entries: [HistoryEntry] = []
         if importShellHistory {
             if let data = try? Data(contentsOf: home.appendingPathComponent(".zsh_history")) {
@@ -77,32 +84,17 @@ public struct History: Sendable {
             }
             entries.sort { ($0.startedAt ?? 0) < ($1.startedAt ?? 0) }
         }
-        if let text = try? String(contentsOf: file, encoding: .utf8) {
-            let decoder = JSONDecoder()
-            entries += text.split(separator: "\n").compactMap { try? decoder.decode(HistoryEntry.self, from: Data($0.utf8)) }
-        }
-        return History(entries: entries, file: file)
+        return History(entries: entries + recorded)
     }
 
-    /// Append a command and save it.
+    /// Whether a command is worth keeping.
+    public static func isWorthKeeping(_ entry: HistoryEntry) -> Bool {
+        !entry.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Append a command.
     public mutating func record(_ entry: HistoryEntry) {
-        guard !entry.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        if let file {
-            do {
-                try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-                var line = try JSONEncoder().encode(entry)
-                line.append(UInt8(ascii: "\n"))
-                if let handle = try? FileHandle(forWritingTo: file) {
-                    defer { try? handle.close() }
-                    try handle.seekToEnd()
-                    try handle.write(contentsOf: line)
-                } else {
-                    try line.write(to: file)
-                }
-            } catch {
-                NSLog("Bridge: could not save history: %@", "\(error)")
-            }
-        }
+        guard Self.isWorthKeeping(entry) else { return }
         entries.append(entry)
     }
 

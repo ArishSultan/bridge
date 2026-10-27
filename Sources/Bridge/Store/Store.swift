@@ -27,13 +27,16 @@ final class Store {
     var profiles: Profiles {
         didSet {
             guard profiles != oldValue else { return }
-            do { try profiles.save() } catch { NSLog("Bridge: could not save profiles: %@", "\(error)") }
+            store { try $0.save(profiles) }
         }
     }
 
     /// Whether "match app" schemes are currently dark.
     private(set) var isDark: Bool
+    /// Something at launch the user needs to know: the terminal engine or the data store failed.
     private(set) var startupError: String?
+    /// The data store (nil only when it couldn't be opened even in memory).
+    @ObservationIgnored private(set) var persistence: Persistence?
     @ObservationIgnored private(set) var terminal: TerminalApp?
 
     /// Port forwards, running in the background.
@@ -82,11 +85,24 @@ final class Store {
     var shellSocketPath: String? { shellServer?.path }
 
     private init() {
-        var settings = Settings.load()
+        let persistence: Persistence?
+        var storeError: String?
+        do {
+            persistence = try Persistence()
+        } catch {
+            // Keep working for this session, in memory.
+            persistence = try? Persistence(url: nil)
+            storeError = "Bridge couldn't open its data in \(Paths.tilde(Persistence.storeURL.path)) "
+                + "(\(error.localizedDescription)). Changes made now won't be kept after you quit."
+        }
+        self.persistence = persistence
+        _ = persistence?.importJSONIfNeeded()
+        var settings = persistence?.loadSettings() ?? Settings()
         settings.sanitize()
         self.settings = settings
-        projects = Projects.load()
-        profiles = Profiles.load()
+        projects = persistence?.loadProjects() ?? Projects()
+        profiles = persistence?.loadProfiles() ?? Profiles()
+        startupError = storeError
         isDark = Self.computeDark(settings.appTheme)
         applyAppTheme()
 
@@ -96,7 +112,7 @@ final class Store {
             terminal.delegate = self
             self.terminal = terminal
         } catch {
-            startupError = "The terminal engine (libghostty) failed to start."
+            startupError = "The terminal engine (libghostty) failed to start, so terminals can't open."
         }
 
         appearanceObservation = NSApp.observe(\.effectiveAppearance) { _, _ in
@@ -110,15 +126,26 @@ final class Store {
             }
         } catch {
             NSLog("Bridge: shell integration unavailable: %@", "\(error)")
+            launchNotices.append("Shell integration is off for this session (\(error.localizedDescription)): "
+                + "no command history, suggestions or prompt settings in new terminals.")
         }
         Task.detached(priority: .utility) { Store.cleanUpAfterLastRun() }
-        let importShellHistory = settings.importShellHistory
-        Task.detached {
-            let history = History.load(importShellHistory: importShellHistory)
-            await MainActor.run { Store.shared.history = history }
-        }
+        loadHistory()
         Attention.shared.start()
         Task { @MainActor in Store.shared.forwards.startEnabled() }
+    }
+
+    /// After launch: tell the user what went wrong while starting, once.
+    func reportLaunchProblems() {
+        let problems = [startupError].compactMap { $0 } + (persistence?.problems ?? []) + launchNotices
+        guard !problems.isEmpty else { return }
+        launchNotices = []
+        let alert = NSAlert()
+        alert.alertStyle = startupError == nil ? .informational : .warning
+        alert.messageText = problems.count == 1 ? "Bridge started with a problem" : "Bridge started with \(problems.count) problems"
+        alert.informativeText = problems.joined(separator: "\n\n")
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     /// Before quitting.
@@ -130,7 +157,43 @@ final class Store {
 
     func tokensLookup(_ token: String) -> ID? { tokens[token] }
 
-    func record(_ entry: HistoryEntry) { history.record(entry) }
+    func record(_ entry: HistoryEntry) {
+        history.record(entry)
+        store { try $0.append(entry) }
+    }
+
+    /// Problems found at launch that aren't fatal (unreadable records, no shell integration).
+    @ObservationIgnored var launchNotices: [String] = []
+
+    /// Read the history in the background: the recorded commands, and the shell's own history.
+    private func loadHistory() {
+        let importShellHistory = settings.importShellHistory
+        let container = persistence?.container
+        Task.detached {
+            let recorded = container.map { Persistence.loadHistory(from: $0) } ?? []
+            let history = History.load(importShellHistory: importShellHistory, recorded: recorded)
+            await MainActor.run {
+                // Commands recorded while it loaded come after.
+                let since = Store.shared.history.entries
+                var all = history
+                for entry in since { all.record(entry) }
+                Store.shared.history = all
+            }
+        }
+    }
+
+    /// Save something; a failure is shown in the window in front.
+    func store(_ save: (Persistence) throws -> Void) {
+        guard let persistence else { return }
+        do {
+            try save(persistence)
+        } catch {
+            NSLog("Bridge: could not save: %@", "\(error)")
+            let window = NSApp.keyWindow
+            let controller = controllers.values.first { $0.window === window } ?? controllers.values.first
+            controller?.toast = "Couldn't save: \(error.localizedDescription)"
+        }
+    }
 
     // MARK: - Settings and appearance
 
@@ -157,11 +220,8 @@ final class Store {
         applyAppTheme()
         try? ShellIntegration.writePrompts(settings)
         if settings.importShellHistory != old.importShellHistory {
-            let importShellHistory = settings.importShellHistory
-            Task.detached {
-                let history = History.load(importShellHistory: importShellHistory)
-                await MainActor.run { Store.shared.history = history }
-            }
+            history = History()
+            loadHistory()
         }
         isDark = Self.computeDark(settings.appTheme)
         terminal?.setColorScheme(dark: isDark)
@@ -173,7 +233,7 @@ final class Store {
         settingsSaveTask = Task {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
-            do { try settings.save() } catch { NSLog("Bridge: could not save settings: %@", "\(error)") }
+            self.store { try $0.save(settings) }
         }
     }
 
@@ -213,7 +273,7 @@ final class Store {
     }
 
     func saveNow() {
-        do { try projects.save() } catch { NSLog("Bridge: could not save projects: %@", "\(error)") }
+        store { try $0.save(projects) }
     }
 
     // MARK: - Projects

@@ -1,8 +1,8 @@
 import Foundation
 
 /// Saved profiles: SSH hosts with their port forwards, sandbox profiles and the Vaultwarden
-/// account, in `~/.config/bridge/profiles.json` (v1's format). Secrets never go in this file:
-/// saved SSH passwords live in the Keychain.
+/// account, stored in the app's data store (v1's `profiles.json` is read once). Secrets are never
+/// stored there: saved SSH passwords live in the Keychain.
 public struct Profiles: Equatable, Sendable {
     public var hosts: [SSHHost] = []
     public var sandboxes: [SandboxProfile] = []
@@ -12,6 +12,19 @@ public struct Profiles: Equatable, Sendable {
     private var counter: ID = 1
 
     public init() {}
+
+    /// Profiles as stored.
+    public init(hosts: [SSHHost], sandboxes: [SandboxProfile], projectSandbox: SandboxEngine?, vault: VaultAccount?, nextID: ID) {
+        self.hosts = hosts
+        self.sandboxes = sandboxes
+        self.projectSandbox = projectSandbox
+        self.vault = vault
+        counter = nextID
+        normalize()
+    }
+
+    /// The next id `nextID()` hands out.
+    public var nextFreeID: ID { counter }
 
     public func host(_ id: ID) -> SSHHost? { hosts.first { $0.id == id } }
     public func sandbox(_ id: ID) -> SandboxProfile? { sandboxes.first { $0.id == id } }
@@ -432,26 +445,20 @@ public struct VaultAccount: Equatable, Sendable, Codable {
     }
 }
 
-// MARK: - Disk
+// MARK: - v1's file
 
 extension Profiles {
+    /// v1's file, read once into the data store.
     public static var fileURL: URL { Settings.configDirectory.appendingPathComponent("profiles.json") }
 
-    /// Load from disk; a missing or unreadable file gives no profiles.
-    public static func load(from url: URL = fileURL) -> Profiles {
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return Profiles() }
+    /// v1's `profiles.json`. Throws when it can't be read, so it is never taken for no profiles.
+    public static func decodeV1(_ data: Data) throws -> Profiles {
         // Paths saved before the app's folder was renamed.
-        let migrated = text.replacingOccurrences(of: "~/.config/gpu-terminal/", with: "~/.config/bridge/")
-        var profiles = (try? JSONDecoder().decode(Profiles.self, from: Data(migrated.utf8))) ?? Profiles()
+        let migrated = String(decoding: data, as: UTF8.self)
+            .replacingOccurrences(of: "~/.config/gpu-terminal/", with: "~/.config/bridge/")
+        var profiles = try JSONDecoder().decode(Profiles.self, from: Data(migrated.utf8))
         profiles.normalize()
         return profiles
-    }
-
-    public func save(to url: URL = fileURL) throws {
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
-        try encoder.encode(self).write(to: url, options: .atomic)
     }
 }
 

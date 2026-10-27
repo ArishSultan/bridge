@@ -51,6 +51,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWindow.allowsAutomaticWindowTabbing = false
         // Start libghostty and load the projects before the first window draws.
         MainActor.assumeIsolated { _ = Store.shared }
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { Store.shared.reportLaunchProblems() }
+        }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

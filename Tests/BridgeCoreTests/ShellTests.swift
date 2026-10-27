@@ -65,15 +65,22 @@ struct HistoryTests {
         #expect(object["exit_code"] as? Int == 0)
     }
 
-    @Test func recordsToFile() throws {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).jsonl")
-        defer { try? FileManager.default.removeItem(at: url) }
-        var history = History.load(importShellHistory: false, file: url)
+    @Test func recordsAndReadsV1Lines() throws {
+        var history = History.load(importShellHistory: false, recorded: [HistoryEntry(command: "zero")])
         history.record(HistoryEntry(command: "one"))
         history.record(HistoryEntry(command: "  "))
         history.record(HistoryEntry(command: "two", exitCode: 1))
-        let again = History.load(importShellHistory: false, file: url)
-        #expect(again.entries.map(\.command) == ["one", "two"])
+        #expect(history.entries.map(\.command) == ["zero", "one", "two"])
+        let lines = #"{"command":"a"}"# + "\nnot json\n" + #"{"command":"b","sandboxed":true}"#
+        #expect(History.readV1(lines).map(\.command) == ["a", "b"])
+        #expect(History.readV1(lines).last?.sandboxed == true)
+    }
+
+    @Test func corruptZshHistoryDoesNotCrash() {
+        let data = Data(": 1700000000:99999999999999999999;ls\n: 1700000001:18446744073709552;pwd\n".utf8)
+        let entries = History.parseZshHistory(data)
+        #expect(entries.map(\.command) == ["ls", "pwd"])
+        #expect(entries.last?.durationMS == nil)
     }
 }
 

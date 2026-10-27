@@ -1,7 +1,7 @@
 import Foundation
 
-/// User settings, stored as JSON in `~/.config/bridge/settings.json` with the same keys and
-/// values as v1. Keys this version doesn't know are kept in `extra` and written back unchanged.
+/// User settings, stored in the app's data store. They are coded with v1's `settings.json` keys
+/// (read once, when v2 first starts); keys this version doesn't know are kept in `extra`.
 public struct Settings: Equatable, Sendable {
     // Appearance
     public var appTheme: AppTheme = .system
@@ -267,31 +267,16 @@ extension Settings {
             .appendingPathComponent("bridge", isDirectory: true)
     }
 
+    /// v1's file, read once into the data store.
     public static var fileURL: URL {
         configDirectory.appendingPathComponent("settings.json")
     }
 
-    /// Load from disk, falling back to defaults when the file is missing or unreadable.
-    public static func load(from url: URL = fileURL) -> Settings {
-        var settings: Settings
-        do {
-            settings = try JSONDecoder().decode(Settings.self, from: Data(contentsOf: url))
-        } catch CocoaError.fileReadNoSuchFile {
-            settings = Settings()
-        } catch {
-            NSLog("Bridge: ignoring settings file %@: %@", url.path, String(describing: error))
-            settings = Settings()
-        }
+    /// v1's `settings.json`.
+    public static func decodeV1(_ data: Data) throws -> Settings {
+        var settings = try JSONDecoder().decode(Settings.self, from: data)
         settings.sanitize()
         return settings
-    }
-
-    public func save(to url: URL = fileURL) throws {
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        try encoder.encode(self).write(to: url, options: .atomic)
     }
 }
 

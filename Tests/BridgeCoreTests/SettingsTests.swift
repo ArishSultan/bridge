@@ -47,21 +47,11 @@ struct SettingsTests {
         #expect(settings.colorScheme == ColorScheme.matchApp)
     }
 
-    @Test func savesAndLoadsFromDisk() throws {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathComponent("settings.json")
-        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-
+    @Test func readsV1File() throws {
         var settings = Settings()
         settings.fontSize = 18
-        try settings.save(to: url)
-        #expect(Settings.load(from: url) == settings)
-    }
-
-    @Test func missingFileGivesDefaults() {
-        let url = URL(fileURLWithPath: "/nonexistent/\(UUID().uuidString).json")
-        #expect(Settings.load(from: url) == Settings())
+        #expect(try Settings.decodeV1(JSONEncoder().encode(settings)) == settings)
+        #expect(throws: (any Error).self) { try Settings.decodeV1(Data("{not json".utf8)) }
     }
 }
 
