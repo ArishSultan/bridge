@@ -9,8 +9,11 @@ struct ProjectWindow: View {
 
     @State private var controller: WindowController
     @State private var closeGuard: WindowCloseGuard?
+    @State private var frameObserver: FrameObserver?
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openSettings) private var openSettings
 
     private var store: Store { .shared }
 
@@ -34,12 +37,8 @@ struct ProjectWindow: View {
         } detail: {
             detail(project)
         }
-        .background(store.chrome.surface)
-        .toolbarBackground(store.chrome.surface, for: .windowToolbar)
-        .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
-        .preferredColorScheme(store.chrome.isDark ? .dark : .light)
-        .navigationTitle(project.name)
-        .navigationSubtitle(controller.isGlobal ? "" : Paths.tilde(project.root.path))
+        .navigationTitle(controller.isGlobal ? "Home" : project.name)
+        .navigationSubtitle(controller.isGlobal ? "Not sandboxed" : Paths.tilde(project.root.path))
         .toolbar { ProjectToolbar(project: project, controller: controller) }
         .focusedSceneValue(\.windowController, controller)
         .sheet(item: $controller.terminalSheet) { request in
@@ -53,12 +52,6 @@ struct ProjectWindow: View {
         .sheet(item: historyTarget) { target in
             HistorySheet(pane: target.id)
         }
-        .sheet(item: $controller.sandboxSheet) { target in
-            SandboxSheet(profileID: target.profile)
-        }
-        .sheet(item: $controller.hostSheet) { HostSheet(hostID: $0.id) }
-        .sheet(item: $controller.forwardSheet) { ForwardSheet(hostID: $0.host, forwardID: $0.forward) }
-        .sheet(item: $controller.logSheet) { ForwardLogSheet(forwardID: $0.id) }
         .overlay(alignment: .bottom) {
             if let toast = controller.toast {
                 Text(toast)
@@ -73,7 +66,7 @@ struct ProjectWindow: View {
                     }
             }
         }
-        .animation(.spring, value: controller.toast)
+        .animation(reduceMotion ? nil : .spring, value: controller.toast)
         .confirmationDialog(
             switchTitle, isPresented: pendingSwitchShown, titleVisibility: .visible
         ) {
@@ -87,10 +80,12 @@ struct ProjectWindow: View {
             "Delete “\(deleteName(project))”?", isPresented: deleteShown, titleVisibility: .visible
         ) {
             Button("Delete", role: .destructive) {
-                if let item = controller.confirmDeleteItem { store.deleteItem(projectID, item: item) }
+                if let item = controller.confirmDeleteItem {
+                    store.deleteItem(projectID, item: item, undo: controller.window?.undoManager)
+                }
             }
         } message: {
-            Text("Its terminals stop. This can't be undone.")
+            Text("Its terminals stop. You can undo this with ⌘Z.")
         }
         .confirmationDialog(
             "Remove “\(project.name)”?", isPresented: $controller.confirmRemoveProject, titleVisibility: .visible
@@ -104,35 +99,36 @@ struct ProjectWindow: View {
             store.openProjectWindow = { [openWindow] id in openWindow(id: "project", value: id) }
             store.closeWelcomeWindow = { [dismissWindow] in dismissWindow(id: "welcome") }
             store.openWelcomeWindow = { [openWindow] in openWindow(id: "welcome") }
+            store.openSettingsWindow = { [openSettings] in openSettings() }
             store.windowOpened(projectID, controller: controller)
             if let active = project.active ?? project.views.first?.id {
                 store.activate(projectID, item: active)
             }
-            if store.pendingFirstTerminal.remove(projectID) != nil {
-                controller.newTerminal(.shell)
+            // A new project starts with a sandboxed shell, ready to type in.
+            if store.pendingFirstTerminal.remove(projectID) != nil, project.views.isEmpty {
+                controller.newShell()
             }
         }
     }
 
     @ViewBuilder
     private func detail(_ project: Project) -> some View {
-        if controller.isGlobal, let page = controller.globalPage {
-            GlobalPageView(page: page, controller: controller)
-        } else if let active = project.active, let view = project.view(active) {
+        if let active = project.active, let view = project.view(active) {
             ItemView(project: project, view: view, controller: controller)
                 .id(view.id)
         } else {
             ContentUnavailableView {
                 Label(
-                    controller.isGlobal ? "No terminals outside projects yet" : "No terminals in this project yet",
+                    controller.isGlobal ? "No terminals in Home yet" : "No terminals in this project yet",
                     systemImage: "terminal")
             } description: {
                 Text(controller.isGlobal
-                     ? "Shells and SSH sessions here start in your home folder."
-                     : "Add a shell, a task like a dev server, or an SSH session.")
+                     ? "Shells and SSH sessions here start in your home folder and aren't sandboxed."
+                     : "A sandboxed terminal can change this folder but can't read your other files, SSH keys or the Keychain.")
             } actions: {
-                Button("New Terminal") { controller.newTerminal(.shell) }
+                Button(controller.isGlobal ? "New Terminal" : "New Sandboxed Terminal") { controller.newShell() }
                     .buttonStyle(.borderedProminent)
+                Button("New Terminal…") { controller.newTerminal(.shell) }
             }
         }
     }
@@ -167,11 +163,25 @@ struct ProjectWindow: View {
         return store.itemName(view, in: project)
     }
 
+    /// Put the window where it was last time, and remember where it goes.
+    private func restoreFrame(_ window: NSWindow) {
+        if let saved = store.project(projectID)?.windowFrame {
+            let frame = NSRectFromString(saved)
+            // Only onto a screen that is still there.
+            if frame.width > 200, NSScreen.screens.contains(where: { $0.visibleFrame.intersects(frame) }) {
+                window.setFrame(frame, display: false)
+            }
+        }
+        frameObserver = FrameObserver(window: window) { frame in
+            Store.shared.update(projectID) { $0.windowFrame = NSStringFromRect(frame) }
+        }
+    }
+
     /// Ask before closing a window with running terminals; closing stops them.
     private func attach(_ window: NSWindow) {
         controller.window = window
         window.tabbingMode = .disallowed
-        window.backgroundColor = Store.shared.chrome.nsSurface
+        restoreFrame(window)
         closeGuard = WindowCloseGuard(
             window: window,
             shouldClose: { window in
@@ -203,7 +213,11 @@ private struct ProjectToolbar: ToolbarContent {
         if !controller.isGlobal {
         ToolbarItem(placement: .navigation) {
                 Menu {
-                    Button("Open in Zed", systemImage: "chevron.left.forwardslash.chevron.right") { openInZed(project.root) }
+                    if let editor = Editor.preferred {
+                        Button("Open in \(editor.name)", systemImage: "chevron.left.forwardslash.chevron.right") {
+                            editor.open(project.root)
+                        }
+                    }
                     Button("Reveal in Finder", systemImage: "folder") {
                         NSWorkspace.shared.activateFileViewerSelecting([project.root])
                     }
@@ -244,8 +258,8 @@ private struct ProjectToolbar: ToolbarContent {
 
         if !controller.isGlobal {
             ToolbarItem {
-                Button("Global", systemImage: "globe") { store.openGlobal() }
-                    .help("Shells, SSH hosts and sandboxes outside projects (⌘⇧G)")
+                Button("Home", systemImage: "house") { store.openGlobal() }
+                    .help("Terminals in your home folder, outside any project (⌘⇧H)")
             }
         }
     }
@@ -397,14 +411,6 @@ struct BranchMenu: View {
             }
         }
     }
-}
-
-func openInZed(_ folder: URL) {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-    // The `zed` command when installed, otherwise the app.
-    process.arguments = ["sh", "-lc", "command -v zed >/dev/null && exec zed \"$0\" || exec open -a Zed \"$0\"", folder.path]
-    try? process.run()
 }
 
 /// A pane, as an identifiable sheet item.

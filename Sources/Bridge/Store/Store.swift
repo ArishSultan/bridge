@@ -61,6 +61,8 @@ final class Store {
     @ObservationIgnored var openWelcomeWindow: (() -> Void)?
     @ObservationIgnored var closeWelcomeWindow: (() -> Void)?
     @ObservationIgnored var openSettingsWindow: (() -> Void)?
+    /// The Settings window's page.
+    var settingsTab: SettingsTab = .appearance
 
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var settingsSaveTask: Task<Void, Never>?
@@ -96,6 +98,10 @@ final class Store {
                 + "(\(error.localizedDescription)). Changes made now won't be kept after you quit."
         }
         self.persistence = persistence
+        // Before the settings are read: a Ghostty theme chosen as the color scheme must be known.
+        if let themes = TerminalApp.resourcesDirectory?.appendingPathComponent("themes") {
+            BridgeCore.ColorScheme.loadGhosttyThemes(from: themes)
+        }
         _ = persistence?.importJSONIfNeeded()
         var settings = persistence?.loadSettings() ?? Settings()
         settings.sanitize()
@@ -150,6 +156,7 @@ final class Store {
 
     /// Before quitting.
     func shutdown() {
+        DenialMonitor.shared.stop()
         forwards.stopAll()
         lockVault()
         shellServer?.shutdown()
@@ -334,7 +341,7 @@ final class Store {
         open(id)
     }
 
-    /// New projects open with the New Terminal sheet.
+    /// New projects open with a sandboxed shell.
     @ObservationIgnored var pendingFirstTerminal: Set<ID> = []
 
     func showOpenPanel() {
@@ -349,6 +356,7 @@ final class Store {
 
     func windowOpened(_ projectID: ID, controller: WindowController) {
         openWindows.insert(projectID)
+        update(projectID) { $0.lastOpened = Date() }
         controllers[projectID] = controller
         closeWelcomeWindow?()
     }
@@ -459,23 +467,41 @@ final class Store {
         }
     }
 
-    /// Delete an item and stop its terminals.
-    func deleteItem(_ projectID: ID, item: ID) {
-        for pane in project(projectID)?.view(item)?.panes ?? [] { discard(pane) }
+    /// Delete an item and stop its terminals. With an undo manager, Undo puts it back where it
+    /// was (its terminals start again).
+    func deleteItem(_ projectID: ID, item: ID, undo: UndoManager? = nil) {
+        guard let project = project(projectID), let index = project.viewIndex(item) else { return }
+        let removed = project.views[index]
+        let name = itemName(removed, in: project)
+        for pane in removed.panes { discard(pane) }
         update(projectID) { $0.removeView(item) }
-        if let active = project(projectID)?.active {
+        if let active = self.project(projectID)?.active {
             activate(projectID, item: active)
         }
+        undo?.registerUndo(withTarget: self) { store in
+            store.update(projectID) { $0.views.insert(removed, at: min(index, $0.views.count)) }
+            store.activate(projectID, item: removed.id)
+        }
+        undo?.setActionName("Close “\(name)”")
     }
 
     /// Close one terminal of a view. The only terminal of an item can't be closed this way.
-    func closePane(_ projectID: ID, pane: ID) {
+    func closePane(_ projectID: ID, pane: ID, undo: UndoManager? = nil) {
         guard let project = project(projectID), let view = project.view(ofPane: pane), view.single == nil else { return }
+        let name = label(of: pane, in: project) ?? "Terminal"
         discard(pane)
         update(projectID) { project in
             guard let index = project.viewIndex(view.id) else { return }
             _ = project.views[index].remove(pane)
         }
+        undo?.registerUndo(withTarget: self) { store in
+            // The view as it was, with the terminal in its place.
+            store.update(projectID) { project in
+                if let index = project.viewIndex(view.id) { project.views[index] = view }
+            }
+            store.startIfNeeded(pane, in: projectID)
+        }
+        undo?.setActionName("Close “\(name)”")
     }
 
     func moveItems(_ projectID: ID, fromOffsets source: IndexSet, toOffset destination: Int) {
@@ -590,7 +616,8 @@ final class Store {
             let engine = profiles.engine(for: profile)
             plan = Launch.sandboxed(
                 plan, engine: engine, spec: spec, pane: pane, project: project, settings: settings,
-                appSocket: shellServer?.path, extraReadable: Self.sandboxReadable)
+                appSocket: shellServer?.path, extraReadable: Self.sandboxReadable, helper: Self.helperPath)
+            if !engine.isDocker { DenialMonitor.shared.start() }
             session.dockerContainer = engine.isDocker ? Sandbox.containerName(pane) : nil
         }
         let options = TerminalSurfaceView.Options(
@@ -613,6 +640,9 @@ final class Store {
         } catch {
             NSLog("Bridge: could not start a terminal: %@", "\(error)")
             session.status = .exited(code: nil)
+            session.launchError = terminal == nil
+                ? "The terminal engine didn't start."
+                : "The terminal couldn't start: \(error.localizedDescription)"
         }
     }
 
@@ -665,10 +695,19 @@ final class Store {
     private func intercept(_ event: NSEvent, session: PaneSession) -> Bool {
         // The completion menu takes its keys while open.
         if CompletionMenu.shared.session === session, CompletionMenu.shared.handle(event) { return true }
-        // ⌃R at a prompt: command history. Inside a program, ⌃R is the program's.
-        if session.atPrompt, event.modifierFlags.intersection([.control, .command, .option, .shift]) == .control,
+        // ⌃R at a prompt: command history, unless the shell is to have it (its reverse search, or
+        // fzf and friends). Inside a program, ⌃R is the program's.
+        if session.atPrompt, controlROpensHistory,
+           event.modifierFlags.intersection([.control, .command, .option, .shift]) == .control,
            event.charactersIgnoringModifiers == "r", let controller = controllers[session.projectID] {
             controller.historyPane = session.id
+            return true
+        }
+        // ⌃Tab and ⌃⇧Tab move between sidebar items, as between tabs anywhere (the menu shows
+        // ⌘⇧] and ⌘⇧[ for the same).
+        if event.keyCode == 48, event.modifierFlags.intersection([.control, .command, .option]) == .control,
+           let controller = controllers[session.projectID] {
+            controller.cycleItems(event.modifierFlags.contains(.shift) ? -1 : 1)
             return true
         }
         guard case .exited = session.status else { return false }
@@ -677,6 +716,18 @@ final class Store {
         }
         return true
     }
+
+    /// Whether ⌃R at a prompt opens Bridge's history.
+    private var controlROpensHistory: Bool {
+        switch settings.controlR {
+        case .bridge: true
+        case .shell: false
+        case .automatic: !Self.shellHasOwnControlR
+        }
+    }
+
+    /// Read once: whether the user's shell setup binds ⌃R itself.
+    static let shellHasOwnControlR = ControlRHandler.shellHasOwn()
 
     func label(of pane: ID, in project: Project) -> String? {
         guard let spec = project.terminal(pane) else { return nil }

@@ -39,12 +39,13 @@ public struct TerminalSpec: Equatable, Sendable, Hashable {
     /// Where it starts, relative to the project folder.
     public var folder: String = "."
     public var isolation: Isolation = .sandboxed(profile: nil)
-    /// Keeps running when its item is left ("Keep alive").
-    public var background = false
+    /// Keeps running when its item is left ("Keep alive"); on unless the user turns it off to
+    /// save memory, as in any terminal, where switching tabs never stops a program.
+    public var background = true
 
     public init(
         name: String = "", tag: String? = nil, kind: TerminalKind = .shell, folder: String = ".",
-        isolation: Isolation = .sandboxed(profile: nil), background: Bool = false
+        isolation: Isolation = .sandboxed(profile: nil), background: Bool = true
     ) {
         self.name = name
         self.tag = tag
@@ -61,7 +62,7 @@ public struct TerminalSpec: Equatable, Sendable, Hashable {
 
     /// What a terminal split off this one is: a shell in the same folder, as isolated.
     public var forSplit: TerminalSpec {
-        TerminalSpec(folder: folder, isolation: effectiveIsolation)
+        TerminalSpec(folder: folder, isolation: effectiveIsolation, background: background)
     }
 }
 
@@ -379,7 +380,7 @@ public struct Projects: Equatable, Sendable {
     public mutating func globalID() -> ID {
         if let global { return global.id }
         let id = nextID()
-        global = Project(id: id, name: "Global", dir: "~")
+        global = Project(id: id, name: "Home", dir: "~")
         return id
     }
 
@@ -541,7 +542,7 @@ extension TerminalSpec: Codable {
         kind = try c.decodeIfPresent(TerminalKind.self, forKey: .kind) ?? .shell
         folder = try c.decodeIfPresent(String.self, forKey: .folder) ?? "."
         isolation = try c.decodeIfPresent(Isolation.self, forKey: .isolation) ?? .sandboxed(profile: nil)
-        background = try c.decodeIfPresent(Bool.self, forKey: .background) ?? false
+        background = try c.decodeIfPresent(Bool.self, forKey: .background) ?? true
     }
 
     public func encode(to encoder: Encoder) throws {

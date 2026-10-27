@@ -81,3 +81,37 @@ struct SSHTests {
     let again = try JSONDecoder().decode(Profiles.self, from: JSONEncoder().encode(profiles))
     #expect(again == profiles)
 }
+
+struct SSHConfigTests {
+    @Test func readsNamedHosts() {
+        let text = """
+        # comment
+        Host *
+          ServerAliveInterval 30
+        Host prod prod-alt
+          HostName 10.0.0.5
+          User deploy
+          Port 2222
+          IdentityFile ~/.ssh/prod
+          User ignored
+        Host=staging
+          HostName=staging.example.com
+        Host *.internal !bastion
+        Match host foo
+          User nobody
+        """
+        let entries = SSHConfig.parse(text)
+        #expect(entries.map(\.alias) == ["prod", "prod-alt", "staging"])
+        #expect(entries[0] == .init(alias: "prod", hostName: "10.0.0.5", user: "deploy", port: 2222, identityFile: "~/.ssh/prod"))
+        #expect(entries[2].hostName == "staging.example.com")
+    }
+
+    @Test func importsOnlyNewHosts() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("sshconfig-\(UUID())")
+        try FileManager.default.createDirectory(at: home.appendingPathComponent(".ssh"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try "Host a\nHost b\nHost -oProxyCommand=x\n".write(to: home.appendingPathComponent(".ssh/config"), atomically: true, encoding: .utf8)
+        let existing = [SSHHost(id: 1, name: "A", host: "a")]
+        #expect(SSHConfig.importable(existing: existing, home: home.path).map(\.host) == ["b"])
+    }
+}

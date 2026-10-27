@@ -49,14 +49,22 @@ public struct Settings: Equatable, Sendable {
 
     // Completions and history
     public var autosuggestions = true
-    public var tabCompletions = true
+    /// Off by default: Tab is the shell's own completion (and fzf-tab and friends) unless chosen.
+    public var tabCompletions = false
+    /// Who gets ⌃R at a prompt.
+    public var controlR: ControlRHandler = .automatic
     public var completionsAsYouType = false
     public var importShellHistory = true
 
     // Prompt
-    public var promptStyle: PromptStyle = .folderGit
+    /// The user's own prompt unless they choose one of Bridge's.
+    public var promptStyle: PromptStyle = .shellDefault
     public var promptTemplate = "{blue}{dir}{reset}{magenta}{git}{reset} {cyan}{symbol}{reset} "
     public var hidePartialLineMarker = true
+
+    // Apps
+    /// The app "Open in" uses for a project folder (a bundle id); empty for the first editor found.
+    public var editor = ""
 
     /// Keys from the file that this version doesn't know.
     public var extra: [String: JSONValue] = [:]
@@ -81,6 +89,35 @@ public struct Settings: Equatable, Sendable {
         }
         if colorScheme != ColorScheme.matchApp && ColorScheme.find(colorScheme) == nil {
             colorScheme = ColorScheme.matchApp
+        }
+    }
+}
+
+/// What ⌃R at a prompt opens.
+public enum ControlRHandler: String, CaseIterable, Codable, Sendable {
+    /// Bridge's history, unless the shell has a ⌃R of its own (fzf, atuin, mcfly).
+    case automatic
+    case bridge
+    case shell
+
+    public var label: String {
+        switch self {
+        case .automatic: "Bridge's, unless your shell has its own"
+        case .bridge: "Bridge's command history"
+        case .shell: "Your shell's (reverse search)"
+        }
+    }
+
+    /// Whether the user's shell setup binds ⌃R itself, read from its startup files.
+    public static func shellHasOwn(home: String = Paths.home) -> Bool {
+        let files = [".zshrc", ".zshenv", ".zprofile", ".bashrc", ".bash_profile", ".config/fish/config.fish"]
+        let markers = ["fzf", "atuin", "mcfly", "hstr", "history-search-multi-word", "zsh-navigation-tools"]
+        return files.contains { name in
+            guard let text = try? String(contentsOfFile: home + "/" + name, encoding: .utf8) else { return false }
+            return text.split(separator: "\n").contains { line in
+                let line = line.trimmingCharacters(in: .whitespaces)
+                return !line.hasPrefix("#") && markers.contains { line.contains($0) }
+            }
         }
     }
 }
@@ -227,6 +264,8 @@ extension Settings: Codable {
         .of("shell_integration", \.shellIntegration),
         .of("autosuggestions", \.autosuggestions),
         .of("tab_completions", \.tabCompletions),
+        .of("control_r", \.controlR),
+        .of("editor", \.editor),
         .of("completions_as_you_type", \.completionsAsYouType),
         .of("import_shell_history", \.importShellHistory),
         .of("prompt_style", \.promptStyle),

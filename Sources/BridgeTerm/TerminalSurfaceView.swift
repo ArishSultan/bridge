@@ -60,6 +60,12 @@ public final class TerminalSurfaceView: NSView {
     public private(set) var focused = false
     /// The URL under the pointer while ⌘ is held, if any.
     public private(set) var hoveredLink: String?
+    /// Scrollback search: whether it is open, what it looks for, how many matches there are and
+    /// which one is selected (from 0; nil while unknown).
+    public private(set) var searching = false
+    public private(set) var searchNeedle = ""
+    public private(set) var searchTotal: Int?
+    public private(set) var searchSelected: Int?
 
     /// Called when `title`, `workingDirectory`, `bell` or `hoveredLink` change.
     public var onChange: (() -> Void)?
@@ -191,6 +197,23 @@ public final class TerminalSurfaceView: NSView {
 
     /// Run a Ghostty key binding action by name, like `copy_to_clipboard` or `increase_font_size:1`.
     @discardableResult
+    /// Open the scrollback search (⌘F).
+    public func startSearch() { _ = perform(binding: "start_search") }
+
+    /// Look for `text` in the scrollback (empty: no matches shown).
+    public func search(_ text: String) {
+        searchNeedle = text
+        _ = perform(binding: "search:" + text.replacingOccurrences(of: "\n", with: " "))
+    }
+
+    /// Move to the next (or previous) match.
+    public func searchNext(backwards: Bool = false) {
+        _ = perform(binding: backwards ? "navigate_search:previous" : "navigate_search:next")
+    }
+
+    /// Close the search.
+    public func endSearch() { _ = perform(binding: "end_search") }
+
     public func perform(binding action: String) -> Bool {
         guard let surface else { return false }
         return action.withCString { ghostty_surface_binding_action(surface, $0, UInt(action.utf8.count)) }
@@ -223,6 +246,21 @@ public final class TerminalSurfaceView: NSView {
             cellSize = CGSize(width: Double(width) / backingScale, height: Double(height) / backingScale)
         case .rendererHealthy(let healthy):
             if !healthy { logger.warning("terminal renderer reported unhealthy") }
+        case .startSearch(let needle):
+            searching = true
+            if !needle.isEmpty { searchNeedle = needle }
+            onChange?()
+        case .endSearch:
+            searching = false
+            searchTotal = nil
+            searchSelected = nil
+            onChange?()
+        case .searchTotal(let total):
+            searchTotal = total
+            onChange?()
+        case .searchSelected(let selected):
+            searchSelected = selected
+            onChange?()
         default:
             return false
         }

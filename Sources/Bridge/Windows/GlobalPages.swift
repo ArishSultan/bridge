@@ -2,28 +2,59 @@ import BridgeCore
 import BridgeSystem
 import SwiftUI
 
-/// A Global window page: what every project shares.
-struct GlobalPageView: View {
-    let page: GlobalPage
-    let controller: WindowController
+/// What every project shares, as Settings pages: SSH hosts with their port forwards, sandbox
+/// profiles, and Vaultwarden.
+enum SharedPage: String, CaseIterable, Identifiable, Hashable {
+    case hosts, sandboxes, vault
+
+    var id: Self { self }
+}
+
+/// The sheets the shared pages open, wherever the pages are shown.
+@MainActor
+@Observable
+final class SharedSheets {
+    static let shared = SharedSheets()
+
+    /// A host (0 new), a forward of a host (0 new), a forward's log, a sandbox profile.
+    var hostSheet: WindowController.Sheet?
+    var forwardSheet: WindowController.ForwardTarget?
+    var logSheet: WindowController.Sheet?
+    var sandboxSheet: WindowController.SandboxTarget?
+    var showVault = false
+}
+
+/// A shared page, with its sheets.
+struct SharedPageView: View {
+    let page: SharedPage
+    @Bindable private var sheets = SharedSheets.shared
 
     var body: some View {
-        switch page {
-        case .hosts: HostsPage(controller: controller)
-        case .sandboxes: SandboxesPage(controller: controller)
-        case .vault: VaultPage()
+        Group {
+            switch page {
+            case .hosts: HostsPage(sheets: sheets)
+            case .sandboxes: SandboxesPage(sheets: sheets)
+            case .vault: VaultPage(sheets: sheets)
+            }
         }
+        .sheet(item: $sheets.hostSheet) { HostSheet(hostID: $0.id) }
+        .sheet(item: $sheets.forwardSheet) { ForwardSheet(hostID: $0.host, forwardID: $0.forward) }
+        .sheet(item: $sheets.logSheet) { ForwardLogSheet(forwardID: $0.id) }
+        .sheet(item: $sheets.sandboxSheet) { SandboxSheet(profileID: $0.profile) }
+        .sheet(isPresented: $sheets.showVault) { VaultSheet() }
     }
 }
 
 // MARK: - SSH hosts
 
 private struct HostsPage: View {
-    let controller: WindowController
+    let sheets: SharedSheets
 
+    @State private var imported: Int?
     private var store: Store { .shared }
 
     var body: some View {
+        let candidates = SSHConfig.importable(existing: store.profiles.hosts)
         Group {
             if store.profiles.hosts.isEmpty {
                 ContentUnavailableView {
@@ -31,36 +62,43 @@ private struct HostsPage: View {
                 } description: {
                     Text("Servers you connect to, from any project, and port forwards over them. Bridge uses your system ssh, so ~/.ssh/config keeps working.")
                 } actions: {
-                    Button("Add SSH Host") { controller.hostSheet = .init(id: 0) }
-                        .buttonStyle(.glassProminent)
+                    Button("Add SSH Host…") { sheets.hostSheet = .init(id: 0) }
+                        .buttonStyle(.borderedProminent)
+                    if !candidates.isEmpty {
+                        Button("Import \(candidates.count) from ~/.ssh/config") { importHosts(candidates) }
+                    }
                 }
             } else {
                 Form {
+                    Section {
+                        HStack {
+                            Button("Add SSH Host…", systemImage: "plus") { sheets.hostSheet = .init(id: 0) }
+                            if !candidates.isEmpty {
+                                Button("Import \(candidates.count) from ~/.ssh/config", systemImage: "square.and.arrow.down") {
+                                    importHosts(candidates)
+                                }
+                            }
+                            Spacer()
+                            VaultButton(sheets: sheets)
+                        }
+                    }
                     ForEach(store.profiles.hosts) { host in
-                        HostSection(host: host, controller: controller)
+                        HostSection(host: host, sheets: sheets)
                     }
                 }
                 .formStyle(.grouped)
-                .scrollContentBackground(.hidden)
             }
         }
-        .background(store.chrome.surface)
-        .navigationTitle("SSH Hosts")
-        .toolbar {
-            ToolbarItem {
-                VaultButton()
-            }
-            ToolbarItem {
-                Button("Add SSH Host", systemImage: "plus") { controller.hostSheet = .init(id: 0) }
-                    .help("Add an SSH host")
-            }
-        }
+    }
+
+    private func importHosts(_ hosts: [SSHHost]) {
+        for host in hosts { store.profiles.upsert(host) }
     }
 }
 
 private struct HostSection: View {
     let host: SSHHost
-    let controller: WindowController
+    let sheets: SharedSheets
 
     @State private var confirmDelete = false
     private var store: Store { .shared }
@@ -73,36 +111,34 @@ private struct HostSection: View {
                 LabeledContent("When it drops", value: host.onDisconnect.label)
             }
             ForEach(host.forwards) { forward in
-                ForwardRow(forward: forward, host: host, controller: controller)
+                ForwardRow(forward: forward, host: host, sheets: sheets)
             }
             HStack {
-                Button("Add Port Forward", systemImage: "arrow.left.arrow.right") {
-                    controller.forwardSheet = .init(host: host.id, forward: 0)
+                Button("Add Port Forward…", systemImage: "arrow.left.arrow.right") {
+                    sheets.forwardSheet = .init(host: host.id, forward: 0)
                 }
                 Spacer()
                 Button("Connect", systemImage: "terminal") { store.connect(host) }
-                    .buttonStyle(.glassProminent)
+                    .buttonStyle(.borderedProminent)
             }
-            .buttonStyle(.glass)
         } header: {
             HStack {
                 Label(host.displayName, systemImage: "server.rack")
                     .font(.headline)
                 Spacer()
                 Menu {
-                    Button("Edit Host…", systemImage: "pencil") { controller.hostSheet = .init(id: host.id) }
+                    Button("Edit Host…", systemImage: "pencil") { sheets.hostSheet = .init(id: host.id) }
                     Button("Add Port Forward…", systemImage: "arrow.left.arrow.right") {
-                        controller.forwardSheet = .init(host: host.id, forward: 0)
+                        sheets.forwardSheet = .init(host: host.id, forward: 0)
                     }
                     Divider()
                     Button("Delete Host…", systemImage: "trash", role: .destructive) { confirmDelete = true }
                 } label: {
-                    Image(systemName: "ellipsis")
+                    Label("Actions for \(host.displayName)", systemImage: "ellipsis.circle")
+                        .labelStyle(.iconOnly)
                 }
-                .menuStyle(.button)
+                .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
                 .fixedSize()
             }
         }
@@ -126,7 +162,7 @@ private struct HostSection: View {
 private struct ForwardRow: View {
     let forward: Forward
     let host: SSHHost
-    let controller: WindowController
+    let sheets: SharedSheets
 
     private var store: Store { .shared }
 
@@ -145,14 +181,15 @@ private struct ForwardRow: View {
             }
         }
         .toggleStyle(.switch)
+        .accessibilityValue(state.text)
         .contextMenu {
-            Button("Edit…") { controller.forwardSheet = .init(host: host.id, forward: forward.id) }
-            Button("Connection Log") { controller.logSheet = .init(id: forward.id) }
+            Button("Edit…") { sheets.forwardSheet = .init(host: host.id, forward: forward.id) }
+            Button("Connection Log") { sheets.logSheet = .init(id: forward.id) }
             Divider()
-            Button("Delete", role: .destructive) { store.deleteForward(forward.id) }
+            Button("Delete", role: .destructive) { store.deleteForward(forward.id, undo: NSApp.keyWindow?.undoManager) }
         }
         .swipeActions {
-            Button("Delete", role: .destructive) { store.deleteForward(forward.id) }
+            Button("Delete", role: .destructive) { store.deleteForward(forward.id, undo: NSApp.keyWindow?.undoManager) }
         }
     }
 }
@@ -160,7 +197,7 @@ private struct ForwardRow: View {
 // MARK: - Sandboxes
 
 private struct SandboxesPage: View {
-    let controller: WindowController
+    let sheets: SharedSheets
 
     private var store: Store { .shared }
 
@@ -168,27 +205,21 @@ private struct SandboxesPage: View {
         Form {
             Section {
                 SandboxRow(name: "Project", detail: summary(store.profiles.projectEngine), isDefault: true, docker: false) {
-                    controller.sandboxSheet = .init(profile: nil)
+                    sheets.sandboxSheet = .init(profile: nil)
                 }
                 ForEach(store.profiles.sandboxes) { profile in
                     SandboxRow(name: profile.name, detail: summary(profile.engine), isDefault: false, docker: profile.engine.isDocker) {
-                        controller.sandboxSheet = .init(profile: profile.id)
+                        sheets.sandboxSheet = .init(profile: profile.id)
                     }
                 }
             } footer: {
                 Text("Every project terminal runs in a sandbox unless it's open. The Project sandbox is the default; terminals can pick another one.")
             }
-        }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
-        .background(store.chrome.surface)
-        .navigationTitle("Sandboxes")
-        .toolbar {
-            ToolbarItem {
-                Button("New Sandbox", systemImage: "plus") { controller.sandboxSheet = .init(profile: 0) }
-                    .help("Add a sandbox profile")
+            Section {
+                Button("New Sandbox…", systemImage: "plus") { sheets.sandboxSheet = .init(profile: 0) }
             }
         }
+        .formStyle(.grouped)
     }
 
     private func summary(_ engine: SandboxEngine) -> String {
@@ -224,6 +255,7 @@ private struct SandboxRow: View {
                     .font(.title2)
                     .foregroundStyle(docker ? Color.blue : Color.green)
                     .frame(width: 28)
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
                         Text(name).font(.body.weight(.medium))
@@ -243,13 +275,15 @@ private struct SandboxRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("\(name)\(isDefault ? ", default" : ""): \(detail)")
+        .accessibilityHint("Edit this sandbox")
     }
 }
 
 // MARK: - Vaultwarden
 
 private struct VaultPage: View {
-    @State private var showUnlock = false
+    let sheets: SharedSheets
     private var store: Store { .shared }
 
     var body: some View {
@@ -268,10 +302,9 @@ private struct VaultPage: View {
                     Spacer()
                     if store.vaultUnlocked {
                         Button("Lock") { store.lockVault() }
-                            .buttonStyle(.glass)
                     } else {
-                        Button(store.profiles.vault == nil ? "Link…" : "Unlock…") { showUnlock = true }
-                            .buttonStyle(.glassProminent)
+                        Button(store.profiles.vault == nil ? "Link…" : "Unlock…") { sheets.showVault = true }
+                            .buttonStyle(.borderedProminent)
                     }
                 }
                 .padding(.vertical, 6)
@@ -304,10 +337,6 @@ private struct VaultPage: View {
             }
         }
         .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
-        .background(store.chrome.surface)
-        .navigationTitle("Vaultwarden")
-        .sheet(isPresented: $showUnlock) { VaultSheet() }
     }
 
     private var statusDetail: String {
@@ -319,9 +348,9 @@ private struct VaultPage: View {
     }
 }
 
-/// Lock or unlock Vaultwarden, for the SSH Hosts page's toolbar.
+/// Lock or unlock Vaultwarden, on the SSH Hosts page.
 struct VaultButton: View {
-    @State private var showSheet = false
+    let sheets: SharedSheets
     private var store: Store { .shared }
 
     var body: some View {
@@ -329,11 +358,10 @@ struct VaultButton: View {
             Button("Lock Vaultwarden", systemImage: "lock.open") { store.lockVault() }
                 .help("Vaultwarden is unlocked: its SSH keys are in use. Click to lock.")
         } else {
-            Button(store.profiles.vault == nil ? "Link Vaultwarden" : "Unlock Vaultwarden", systemImage: "lock") {
-                showSheet = true
+            Button(store.profiles.vault == nil ? "Link Vaultwarden…" : "Unlock Vaultwarden…", systemImage: "lock") {
+                sheets.showVault = true
             }
             .help(store.profiles.vault == nil ? "Link Vaultwarden, to sign in with its SSH keys" : "Unlock Vaultwarden")
-            .sheet(isPresented: $showSheet) { VaultSheet() }
         }
     }
 }

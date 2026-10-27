@@ -250,3 +250,38 @@ struct SandboxTests {
     try (exports + ["cd \(Launch.quote(root))", plan.command ?? ""]).joined(separator: "\n")
         .write(toFile: out, atomically: true, encoding: .utf8)
 }
+
+struct SandboxDenialTests {
+    @Test func parsesKernelMessages() throws {
+        let denial = try #require(SandboxDenial.parse("Sandbox: cat(2053) deny(1) file-read-data /Users/me/.ssh/config\nbridge-pane-42"))
+        #expect(denial == SandboxDenial(pane: 42, process: "cat", operation: "file-read-data", target: "/Users/me/.ssh/config"))
+        #expect(denial.kind == .read && denial.isPath)
+        let repeated = try #require(SandboxDenial.parse(
+            "4 duplicate reports for Sandbox: node (helper)(77) deny(1) mach-lookup com.apple.pasteboard.1\nbridge-pane-7"))
+        #expect(repeated.process == "node (helper)")
+        #expect(repeated.count == 5)
+        #expect(repeated.kind == .service)
+        #expect(SandboxDenial.parse("Sandbox: Safari(1) deny(1) mach-lookup x") == nil)
+    }
+
+    @Test func policyMarksDenials() throws {
+        guard case .seatbelt(let s) = SandboxEngine.seatbeltDefaults else { return }
+        let policy = Sandbox.policy(s, context: .init(root: URL(fileURLWithPath: "/tmp"), path: nil, marker: "bridge-pane-3"))
+        #expect(policy.contains(#"(deny file-write* (with message "bridge-pane-3"))"#))
+        // Every deny rule carries it.
+        let denies = policy.components(separatedBy: "(deny ").count - 1
+        #expect(policy.components(separatedBy: #"(with message "bridge-pane-3")"#).count - 1 == denies)
+    }
+}
+
+@Test func onlyTheSessionsOwnTTY() {
+    guard case .seatbelt(let s) = SandboxEngine.seatbeltDefaults else { return }
+    let policy = Sandbox.policy(s, context: .init(root: URL(fileURLWithPath: "/tmp"), path: nil, tty: Sandbox.ttyPlaceholder))
+    #expect(policy.contains(#"(deny file-read-data file-write* (regex #"^/dev/ttys[0-9]+$"))"#))
+    #expect(policy.contains(#"(allow file-read-data file-write* (literal "@BRIDGE_TTY@"))"#))
+    let plan = Launch.sandboxed(
+        LaunchPlan(folder: URL(fileURLWithPath: "/tmp"), command: nil), engine: .seatbeltDefaults, spec: TerminalSpec(),
+        pane: 1, project: Project(id: 1, name: "p", dir: "/tmp"), settings: Settings(), appSocket: nil,
+        extraReadable: [], helper: "/Apps/Bridge.app/Contents/Helpers/bridge-helper", environment: [:])
+    #expect(plan.command?.hasPrefix("/usr/bin/env -u SSH_AUTH_SOCK /Apps/Bridge.app/Contents/Helpers/bridge-helper sandbox '") == true)
+}

@@ -2,6 +2,7 @@ import AppKit
 import BridgeCore
 import Observation
 import SwiftUI
+import BridgeTerm
 
 /// One project window's state and commands: sheets, confirmations, renaming, and the menu
 /// commands that act on the window in front.
@@ -14,8 +15,6 @@ final class WindowController {
     /// The New/Edit Terminal sheet.
     var terminalSheet: TerminalSheetRequest?
     var showProjectSheet = false
-    /// In the Global window: a shared page (hosts, sandboxes, Vaultwarden) shown instead of an item.
-    var globalPage: GlobalPage?
     /// The command history sheet, for this pane.
     var historyPane: ID?
     /// Switching away would stop these running terminals: asks Keep alive / Stop and switch.
@@ -24,11 +23,7 @@ final class WindowController {
     var renaming: RenameTarget?
     var confirmDeleteItem: ID?
     var confirmRemoveProject = false
-    /// SSH sheets: a host (0 new), a forward of a host (0 new), a forward's log.
-    var hostSheet: Sheet?
-    var forwardSheet: ForwardTarget?
-    var logSheet: Sheet?
-
+    /// Identifies a sheet's subject (SSH sheets: a host, 0 new; a forward's log).
     struct Sheet: Identifiable {
         let id: ID
     }
@@ -39,9 +34,7 @@ final class WindowController {
         var id: String { "\(host)-\(forward)" }
     }
 
-    /// The sandbox profile being edited: nil none, `.project` the built-in one.
-    var sandboxSheet: SandboxTarget?
-
+    /// A sandbox profile to edit.
     struct SandboxTarget: Identifiable {
         /// nil: the Project sandbox; 0: a new profile.
         let profile: ID?
@@ -63,6 +56,11 @@ final class WindowController {
 
     var project: Project? { store.project(projectID) }
     var isGlobal: Bool { store.isGlobal(projectID) }
+
+    /// The focused pane's terminal, when it is running.
+    var focusedSurface: TerminalSurfaceView? {
+        focusedPane.flatMap { store.sessions[$0]?.surface }
+    }
 
     /// The pane with focus in the item on screen.
     var focusedPane: ID? {
@@ -101,19 +99,26 @@ final class WindowController {
 
     // MARK: - Terminals
 
-    /// ⌘T, ⌘⇧T, ⌘⇧E: the New Terminal sheet with a preset.
+    /// ⌘T: a shell right away, sandboxed in the project (in the Home window, where there is no
+    /// project to confine it to, open). Every other kind of terminal is made with the sheet.
+    func newShell() {
+        store.addItem(projectID, spec: TerminalSpec(isolation: isGlobal ? .open : .sandboxed(profile: nil)))
+    }
+
+    /// ⌘⇧T, ⌘⇧E: the New Terminal sheet with a preset.
     func newTerminal(_ preset: TerminalSheetRequest.Preset) {
         terminalSheet = TerminalSheetRequest(mode: .newItem, preset: preset)
     }
 
-    /// ⌘D / ⌘⇧D: a terminal beside the focused one, like it (same folder and isolation).
+    /// ⌘D / ⌘⇧D: a shell beside the focused terminal right away, like it (same folder and
+    /// isolation).
     func split(_ axis: SplitAxis) {
         guard let project else { return }
         guard let pane = focusedPane, let spec = project.terminal(pane) else {
-            newTerminal(.shell)
+            newShell()
             return
         }
-        terminalSheet = TerminalSheetRequest(mode: .split(axis: axis, nextTo: pane), preset: .spec(spec.forSplit))
+        store.addPane(projectID, spec: spec.forSplit, axis: axis, nextTo: pane)
     }
 
     func edit(_ pane: ID) {
@@ -133,13 +138,34 @@ final class WindowController {
         }
     }
 
-    /// ⌘W: close the focused terminal of a view; otherwise the window.
+    /// ⌘W: close the focused terminal of a view, or the terminal on screen; the window stays.
+    /// It can be undone (the terminal comes back, started again). A program that is busy (not at
+    /// a shell prompt) asks first.
     func closeFocused() {
-        guard let project, let pane = focusedPane, let view = project.view(ofPane: pane), view.single == nil else {
+        guard let project, let pane = focusedPane, let view = project.view(ofPane: pane) else {
             window?.performClose(nil)
             return
         }
-        store.closePane(projectID, pane: pane)
+        let close = { [self] in
+            if view.single == nil {
+                store.closePane(projectID, pane: pane, undo: window?.undoManager)
+            } else {
+                store.deleteItem(projectID, item: view.id, undo: window?.undoManager)
+            }
+        }
+        guard let session = store.sessions[pane], session.status.isRunning, !session.atPrompt else {
+            close()
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Close “\(store.label(of: pane, in: project) ?? "Terminal")”?"
+        alert.informativeText = "A program is still running in it; closing stops it."
+        alert.addButton(withTitle: "Stop and Close")
+        alert.addButton(withTitle: "Cancel")
+        guard let window else { return }
+        alert.beginSheetModal(for: window) { response in
+            if response == .alertFirstButtonReturn { close() }
+        }
     }
 
     func focusNeighbor(of pane: ID, _ direction: BridgeCore.Layout.Focus) -> Bool {

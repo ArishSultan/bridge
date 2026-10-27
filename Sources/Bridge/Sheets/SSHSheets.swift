@@ -308,7 +308,7 @@ extension StatusDot {
         switch forward {
         case .up: self.init(status: .running)
         case .failed: self.init(status: .exited(code: 1))
-        case .connecting, .retrying: self.init(color: .orange, help: forward.text)
+        case .connecting, .retrying: self.init(color: .orange, help: forward.text, symbol: "circle.dotted")
         case .off: self.init(status: .stopped)
         }
     }

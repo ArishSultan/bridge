@@ -5,6 +5,9 @@ import Foundation
 //
 //   bridge-helper send <socket> <fields…> [-- <fields…>]…
 //       Deliver messages to the app's shell socket (for bash, which has no unix sockets).
+//   bridge-helper sandbox <policy> <program> <args…>
+//       Run a program in a Seatbelt sandbox, after putting the terminal it runs in (stdin's tty)
+//       into the policy where it says @BRIDGE_TTY@.
 //   bridge-helper guard <program> <args…>
 //       Run a program and end it when the app goes away (port forwards, the vault's ssh-agent).
 //   SSH_ASKPASS mode, when BRIDGE_ASKPASS is set (ssh runs us with its prompt):
@@ -199,6 +202,16 @@ case "send":
     }
     for message in messages where !message.isEmpty { write(fd, message) }
     close(fd)
+case "sandbox":
+    guard arguments.count >= 3 else { fail("usage: sandbox <policy> <program> <args…>") }
+    // No terminal: a path no tty has, so none is allowed.
+    let tty = ttyname(0).map { String(cString: $0) } ?? "/dev/null"
+    let quoted = "\"" + tty.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    let policy = arguments[1].replacingOccurrences(of: "\"@BRIDGE_TTY@\"", with: quoted)
+    let argv = ["sandbox-exec", "-p", policy] + arguments.dropFirst(2)
+    var cArgs = argv.map { strdup($0) } + [nil]
+    execv("/usr/bin/sandbox-exec", &cArgs)
+    fail("could not start sandbox-exec: \(String(cString: strerror(errno)))")
 case "guard":
     guard arguments.count >= 2 else { fail("usage: guard <program> <args…>") }
     runGuarded(Array(arguments.dropFirst()))

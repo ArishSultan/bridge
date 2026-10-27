@@ -177,3 +177,23 @@ extension View {
         font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
     }
 }
+
+/// Reports a window's frame when the user has finished moving or resizing it.
+@MainActor
+final class FrameObserver {
+    private var tokens: [NSObjectProtocol] = []
+
+    init(window: NSWindow, changed: @escaping @MainActor (NSRect) -> Void) {
+        for name in [NSWindow.didEndLiveResizeNotification, NSWindow.didMoveNotification] {
+            tokens.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak window] _ in
+                MainActor.assumeIsolated {
+                    if let window, !window.styleMask.contains(.fullScreen) { changed(window.frame) }
+                }
+            })
+        }
+    }
+
+    isolated deinit {
+        for token in tokens { NotificationCenter.default.removeObserver(token) }
+    }
+}

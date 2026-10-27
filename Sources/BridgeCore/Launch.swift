@@ -62,7 +62,7 @@ public enum Launch {
     /// start. `appSocket` is the shells' socket, the one the sandbox may reach outside the project.
     public static func sandboxed(
         _ plan: LaunchPlan, engine: SandboxEngine, spec: TerminalSpec, pane: ID, project: Project,
-        settings: Settings, appSocket: String?, extraReadable: [URL],
+        settings: Settings, appSocket: String?, extraReadable: [URL], helper: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> LaunchPlan {
         var plan = plan
@@ -90,13 +90,15 @@ public enum Launch {
 
             let policy = Sandbox.policy(seatbelt, context: Sandbox.Context(
                 root: project.root, extraWritable: [history, temporary, state], extraReadable: extraReadable,
-                appSocket: appSocket))
+                appSocket: appSocket, marker: SandboxDenial.marker(pane), tty: helper == nil ? nil : Sandbox.ttyPlaceholder))
             let inner = plan.command ?? "\(quote(loginShell(settings))) -l"
             // The ssh-agent socket would hand out the user's keys, and the app's own environment
             // may hold tokens (when it was started from a terminal).
             let unset = (["SSH_AUTH_SOCK"] + secretVariables(environment)).map { "-u \(quote($0))" }.joined(separator: " ")
             let flat = policy.replacingOccurrences(of: "\n", with: " ")
-            plan.command = "/usr/bin/env \(unset) /usr/bin/sandbox-exec -p \(quote(flat)) \(inner)"
+            // Through the helper, which puts the session's own tty into the policy first.
+            let sandbox = helper.map { "\(quote($0)) sandbox" } ?? "/usr/bin/sandbox-exec -p"
+            plan.command = "/usr/bin/env \(unset) \(sandbox) \(quote(flat)) \(inner)"
             return plan
         case .docker(let docker):
             let root = project.root.standardizedFileURL.path

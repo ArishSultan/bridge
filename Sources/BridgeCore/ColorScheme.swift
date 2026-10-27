@@ -1,3 +1,5 @@
+import Foundation
+import Synchronization
 /// A terminal color scheme: foreground, background, cursor and the 16 ANSI colors.
 public struct ColorScheme: Identifiable, Equatable, Sendable {
     public let id: String
@@ -12,7 +14,7 @@ public struct ColorScheme: Identifiable, Equatable, Sendable {
     public static let matchApp = "match-app"
 
     public static func find(_ id: String) -> ColorScheme? {
-        all.first { $0.id == id }
+        all.first { $0.id == id } ?? ghosttyThemes.first { $0.id == id }
     }
 
     /// The scheme to draw with: the chosen one, or for "match-app" v1's app colors: near-black
@@ -30,6 +32,55 @@ public struct ColorScheme: Identifiable, Equatable, Sendable {
     /// `(id, label)` pairs for the settings picker, starting with the app-matched scheme.
     public static var options: [(id: String, name: String)] {
         [(matchApp, "Match app theme")] + all.map { ($0.id, $0.name) }
+    }
+
+    /// Ghostty's own themes (several hundred), when the app has found them.
+    public static var ghosttyThemes: [ColorScheme] { themes.withLock { $0 } }
+
+    private static let themes = Mutex<[ColorScheme]>([])
+
+    /// Read the themes in Ghostty's `themes` folder (bundled with the app). Ids are
+    /// `ghostty:<file name>`.
+    public static func loadGhosttyThemes(from folder: URL) {
+        let names = ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).sorted {
+            $0.localizedStandardCompare($1) == .orderedAscending
+        }
+        let loaded = names.compactMap { name -> ColorScheme? in
+            guard !name.hasPrefix("."),
+                  let text = try? String(contentsOf: folder.appendingPathComponent(name), encoding: .utf8)
+            else { return nil }
+            return parseGhosttyTheme(text, id: "ghostty:" + name, name: name)
+        }
+        themes.withLock { $0 = loaded }
+    }
+
+    /// A Ghostty theme file: `palette = N=#rrggbb`, `background`, `foreground`, `cursor-color`.
+    public static func parseGhosttyTheme(_ text: String, id: String, name: String) -> ColorScheme? {
+        var palette = [UInt32?](repeating: nil, count: 16)
+        var background: UInt32?, foreground: UInt32?, cursor: UInt32?
+        func color(_ value: Substring) -> UInt32? {
+            let hex = value.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+            return hex.count == 6 ? UInt32(hex, radix: 16) : nil
+        }
+        for line in text.split(whereSeparator: \.isNewline) {
+            let parts = line.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            let key = parts[0].trimmingCharacters(in: .whitespaces)
+            switch key {
+            case "background": background = color(parts[1])
+            case "foreground": foreground = color(parts[1])
+            case "cursor-color": cursor = color(parts[1])
+            case "palette":
+                let entry = parts[1].split(separator: "=", maxSplits: 1)
+                if entry.count == 2, let index = Int(entry[0].trimmingCharacters(in: .whitespaces)), (0..<16).contains(index) {
+                    palette[index] = color(entry[1])
+                }
+            default: break
+            }
+        }
+        guard let background, let foreground else { return nil }
+        let ansi = palette.allSatisfy { $0 != nil } ? palette.compactMap { $0 } : nil
+        return ColorScheme(id: id, name: name, foreground: foreground, background: background, cursor: cursor, ansi: ansi)
     }
 
     /// True when the background is light, so the window chrome should be too.

@@ -36,6 +36,15 @@ final class PaneSession: Identifiable {
     private(set) var title = ""
     private(set) var directory: String?
     private(set) var hoveredLink: String?
+    /// Scrollback search (⌘F): open, its matches, and the one selected.
+    private(set) var searching = false
+    private(set) var searchTotal: Int?
+    private(set) var searchSelected: Int?
+    /// Why the terminal couldn't start, shown instead of its output.
+    var launchError: String?
+    /// What its sandbox refused (newest last), and how many since the user last looked.
+    private(set) var denials: [SandboxDenial] = []
+    private(set) var unseenDenials = 0
     /// The bell rang or a long command finished while this pane was out of sight.
     var needsAttention = false
     /// Set when the user stopped it, so exiting doesn't restart or reconnect it.
@@ -99,6 +108,24 @@ final class PaneSession: Identifiable {
         self.status = status
     }
 
+    func record(_ denial: SandboxDenial) {
+        if let index = denials.firstIndex(where: { $0.id == denial.id }) {
+            var merged = denials.remove(at: index)
+            merged.count += denial.count
+            denials.append(merged)
+        } else {
+            denials.append(denial)
+            unseenDenials += 1
+        }
+        if denials.count > 50 { denials.removeFirst(denials.count - 50) }
+    }
+
+    func dismiss(_ denial: SandboxDenial) {
+        denials.removeAll { $0.id == denial.id }
+    }
+
+    func denialsSeen() { unseenDenials = 0 }
+
     /// The shell reported its folder.
     func report(directory: String) {
         shellDirectory = directory
@@ -110,6 +137,9 @@ final class PaneSession: Identifiable {
         title = surface.title
         directory = surface.workingDirectory ?? shellDirectory
         hoveredLink = surface.hoveredLink
+        searching = surface.searching
+        searchTotal = surface.searchTotal
+        searchSelected = surface.searchSelected
         if surface.bell { needsAttention = true }
     }
 }

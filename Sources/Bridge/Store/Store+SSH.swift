@@ -43,7 +43,7 @@ extension Store {
     /// A host's name, for labels.
     func hostName(_ id: ID) -> String? { profiles.host(id)?.displayName }
 
-    /// Open an SSH session to a host as a new terminal in the Global window.
+    /// Open an SSH session to a host as a new terminal in the Home window.
     func connect(_ host: SSHHost) {
         let global = globalID
         openGlobal()
@@ -57,9 +57,19 @@ extension Store {
         profiles.removeHost(id)
     }
 
-    func deleteForward(_ id: ID) {
+    /// Delete a port forward; Undo brings it back (switched on again if it was).
+    func deleteForward(_ id: ID, undo: UndoManager? = nil) {
+        guard let (forward, host) = profiles.forward(id),
+              let index = host.forwards.firstIndex(where: { $0.id == id }) else { return }
         forwards.stop(id)
         profiles.removeForward(id)
+        undo?.registerUndo(withTarget: self) { store in
+            guard let hostIndex = store.profiles.hosts.firstIndex(where: { $0.id == host.id }) else { return }
+            let forwards = store.profiles.hosts[hostIndex].forwards
+            store.profiles.hosts[hostIndex].forwards.insert(forward, at: min(index, forwards.count))
+            if forward.enabled { store.forwards.start(forward.id) }
+        }
+        undo?.setActionName("Delete Port Forward")
     }
 
     /// An SSH session dropped (exit 255, not stopped by hand): what its host says to do.

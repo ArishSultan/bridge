@@ -90,82 +90,142 @@ extension FocusedValues {
     @Entry var windowController: WindowController?
 }
 
-/// The app's menu commands, acting on the project window in front.
+/// The app's menu commands, acting on the project window in front. Every toolbar and sidebar
+/// action is here too, with the standard Mac shortcuts where there is one.
 struct BridgeCommands: Commands {
     @FocusedValue(\.windowController) private var controller
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
+    @Environment(\.openURL) private var openURL
 
     private var store: Store { .shared }
+    private var noWindow: Bool { controller == nil }
+    private var noTerminal: Bool { controller?.focusedSurface == nil }
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             Button("Open Folder…") { store.showOpenPanel() }
                 .keyboardShortcut("o")
             Divider()
-            Button("New Terminal") { controller?.newTerminal(.shell) }
+            Button(controller?.isGlobal == true ? "New Terminal" : "New Sandboxed Terminal") { controller?.newShell() }
                 .keyboardShortcut("t")
-                .disabled(controller == nil)
-            Button("New Open Terminal") { controller?.newTerminal(.openShell) }
+                .disabled(noWindow)
+            Button("New Terminal…") { controller?.newTerminal(.shell) }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
-                .disabled(controller == nil)
-            Button("New Task") { controller?.newTerminal(.task) }
+                .disabled(noWindow)
+            Button("New Task…") { controller?.newTerminal(.task) }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
-                .disabled(controller == nil)
-            Button("New Claude Terminal") {
-                if let controller { store.newAgentTerminal(.claude, in: controller.projectID) }
+                .disabled(noWindow)
+            Menu("New Agent Terminal") {
+                ForEach(Agent.allCases) { agent in
+                    let button = Button(agent.name) {
+                        if let controller { store.newAgentTerminal(agent, in: controller.projectID) }
+                    }
+                    if agent == .claude {
+                        button.keyboardShortcut("c", modifiers: [.command, .option])
+                    } else {
+                        button
+                    }
+                }
             }
-            .keyboardShortcut("c", modifiers: [.command, .option])
-            .disabled(controller == nil)
+            .disabled(noWindow)
             Divider()
             Button("Split Right") { controller?.split(.horizontal) }
                 .keyboardShortcut("d")
-                .disabled(controller == nil)
+                .disabled(noWindow)
             Button("Split Down") { controller?.split(.vertical) }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
-                .disabled(controller == nil)
+                .disabled(noWindow)
             Divider()
             Button("Close Terminal") { controller?.closeFocused() }
                 .keyboardShortcut("w")
-                .disabled(controller == nil)
+                .disabled(noWindow)
             Button("Close Window") { NSApp.keyWindow?.performClose(nil) }
                 .keyboardShortcut("w", modifiers: [.command, .shift])
         }
 
-        CommandGroup(after: .sidebar) {
-            Button("Toggle Sidebar") { store.sidebarOpen.toggle() }
-                .keyboardShortcut("b")
-            Divider()
-            Button("Next Terminal") { controller?.cyclePanes(1) }
-                .keyboardShortcut("]")
-                .disabled(controller == nil)
-            Button("Previous Terminal") { controller?.cyclePanes(-1) }
-                .keyboardShortcut("[")
-                .disabled(controller == nil)
-            Button("Next Item") { controller?.cycleItems(1) }
-                .keyboardShortcut("]", modifiers: [.command, .shift])
-                .disabled(controller == nil)
-            Button("Previous Item") { controller?.cycleItems(-1) }
-                .keyboardShortcut("[", modifiers: [.command, .shift])
-                .disabled(controller == nil)
-            Button("Next Item") { controller?.cycleItems(1) }
-                .keyboardShortcut(.tab, modifiers: .control)
-                .disabled(controller == nil)
-            Button("Previous Item") { controller?.cycleItems(-1) }
-                .keyboardShortcut(.tab, modifiers: [.control, .shift])
-                .disabled(controller == nil)
-            Divider()
-            ForEach(1...9, id: \.self) { index in
-                Button("Go to Item \(index)") { controller?.goToItem(index - 1) }
-                    .keyboardShortcut(KeyEquivalent(Character("\(index)")))
-                    .disabled(controller == nil)
+        CommandGroup(after: .textEditing) {
+            Menu("Find") {
+                Button("Find…") { controller?.focusedSurface?.startSearch() }
+                    .keyboardShortcut("f")
+                Button("Find Next") { controller?.focusedSurface?.searchNext() }
+                    .keyboardShortcut("g")
+                Button("Find Previous") { controller?.focusedSurface?.searchNext(backwards: true) }
+                    .keyboardShortcut("g", modifiers: [.command, .shift])
             }
+            .disabled(noTerminal)
+            Button("Clear Scrollback") { _ = controller?.focusedSurface?.perform(binding: "clear_screen") }
+                .keyboardShortcut("k")
+                .disabled(noTerminal)
+        }
+
+        CommandGroup(after: .sidebar) {
+            Divider()
+            Button("Bigger") { _ = controller?.focusedSurface?.perform(binding: "increase_font_size:1") }
+                .keyboardShortcut("+")
+                .disabled(noTerminal)
+            Button("Smaller") { _ = controller?.focusedSurface?.perform(binding: "decrease_font_size:1") }
+                .keyboardShortcut("-")
+                .disabled(noTerminal)
+            Button("Actual Size") { _ = controller?.focusedSurface?.perform(binding: "reset_font_size") }
+                .keyboardShortcut("0")
+                .disabled(noTerminal)
+            Divider()
+            Button("Next in Sidebar") { controller?.cycleItems(1) }
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+                .disabled(noWindow)
+            Button("Previous in Sidebar") { controller?.cycleItems(-1) }
+                .keyboardShortcut("[", modifiers: [.command, .shift])
+                .disabled(noWindow)
+            Button("Next Pane") { controller?.cyclePanes(1) }
+                .keyboardShortcut("]")
+                .disabled(noWindow)
+            Button("Previous Pane") { controller?.cyclePanes(-1) }
+                .keyboardShortcut("[")
+                .disabled(noWindow)
+            Menu("Go To") {
+                ForEach(1...9, id: \.self) { index in
+                    Button(itemTitle(index)) { controller?.goToItem(index - 1) }
+                        .keyboardShortcut(KeyEquivalent(Character("\(index)")))
+                        .disabled((controller?.project?.views.count ?? 0) < index)
+                }
+            }
+            .disabled(noWindow)
+            Divider()
+            Button("Command History…") { controller?.historyPane = controller?.focusedPane }
+                .disabled(controller?.focusedPane == nil)
         }
 
         CommandGroup(after: .windowList) {
             Divider()
-            Button("Global") { store.openGlobal() }
-                .keyboardShortcut("g", modifiers: [.command, .shift])
+            Button("Home") { store.openGlobal() }
+                .keyboardShortcut("h", modifiers: [.command, .shift])
             Button("Welcome") { openWindow(id: "welcome") }
         }
+
+        CommandGroup(replacing: .help) {
+            Button("Bridge Help") { openURL(Links.help) }
+            Button("How Sandboxed Terminals Work") { openURL(Links.sandbox) }
+            Button("Keyboard Shortcuts") {
+                store.settingsTab = .keyboard
+                openSettings()
+            }
+            Divider()
+            Button("Report an Issue…") { openURL(Links.issues) }
+        }
     }
+
+    /// "1  web" for the first item of the window in front.
+    private func itemTitle(_ index: Int) -> String {
+        guard let project = controller?.project, index <= project.views.count else { return "Item \(index)" }
+        return store.itemName(project.views[index - 1], in: project)
+    }
+}
+
+/// Where the documentation lives.
+enum Links {
+    static let repository = URL(string: "https://github.com/ArishSultan/bridge")!
+    static let help = URL(string: "https://github.com/ArishSultan/bridge#readme")!
+    static let sandbox = URL(string: "https://github.com/ArishSultan/bridge/blob/main/docs/sandbox.md")!
+    static let issues = URL(string: "https://github.com/ArishSultan/bridge/issues/new")!
 }

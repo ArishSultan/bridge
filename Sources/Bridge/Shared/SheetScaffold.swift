@@ -33,7 +33,7 @@ struct SheetScaffold<Content: View>: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(confirm, action: onConfirm)
-                        .buttonStyle(.glassProminent)
+                        .buttonStyle(.borderedProminent)
                         .disabled(confirmDisabled)
                 }
             }

@@ -46,7 +46,7 @@ struct TerminalSheet: View {
             case .ssh:
                 Section("Host") {
                     if store.profiles.hosts.isEmpty {
-                        Text("Add SSH hosts in the Global window first.").foregroundStyle(.secondary)
+                        Text("Add SSH hosts in Settings → SSH Hosts first.").foregroundStyle(.secondary)
                     } else {
                         Picker("Connect to", selection: $host) {
                             ForEach(store.profiles.hosts) { host in
@@ -182,7 +182,7 @@ struct TerminalSheet: View {
             guard !command.isEmpty else { error = "Enter the command this terminal runs."; return }
             terminalKind = .task(command: command, autoStart: autoStart, restartOnExit: restartOnExit)
         case .ssh:
-            guard let host else { error = "Choose an SSH host (add hosts in Global)."; return }
+            guard let host else { error = "Choose an SSH host (add hosts in Settings → SSH Hosts)."; return }
             terminalKind = .ssh(host: host)
         }
 

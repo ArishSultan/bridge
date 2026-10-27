@@ -2,7 +2,7 @@ import AppKit
 import BridgeCore
 import SwiftUI
 
-/// Shown when no other window is open: recent projects, Open Folder and Global.
+/// Shown when no other window is open: recent projects, Open Folder and Home.
 struct WelcomeWindow: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
@@ -18,8 +18,9 @@ struct WelcomeWindow: View {
                     .resizable()
                     .frame(width: 96, height: 96)
                 Text("Bridge").font(.largeTitle.weight(.semibold))
-                Text("Your projects, servers and terminals")
+                Text("Terminals your agents can't escape")
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
                 Spacer()
                 VStack(spacing: 8) {
                     Button {
@@ -33,10 +34,11 @@ struct WelcomeWindow: View {
                     Button {
                         store.openGlobal()
                     } label: {
-                        Label("Global", systemImage: "globe")
+                        Label("Home", systemImage: "house")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
+                    .help("Terminals in your home folder, outside any project (not sandboxed)")
                 }
                 .controlSize(.large)
                 .frame(width: 220)
@@ -48,13 +50,11 @@ struct WelcomeWindow: View {
 
             Group {
                 if store.projects.projects.isEmpty {
-                    ContentUnavailableView(
-                        "No projects yet", systemImage: "folder",
-                        description: Text("A project is a folder. Open one to start."))
+                    GettingStarted()
                 } else {
                     List {
                         Section("Recent Projects") {
-                            ForEach(store.projects.projects) { project in
+                            ForEach(recent) { project in
                                 Button {
                                     store.open(project.id)
                                 } label: {
@@ -77,7 +77,6 @@ struct WelcomeWindow: View {
                                         .disabled(store.openWindows.contains(project.id))
                                 }
                             }
-                            .onMove { store.moveProjects(fromOffsets: $0, toOffset: $1) }
                         }
                     }
                     .listStyle(.sidebar)
@@ -86,7 +85,7 @@ struct WelcomeWindow: View {
             }
             .frame(minWidth: 320)
         }
-        .frame(width: 720, height: 440)
+        .frame(width: 720, height: 460)
         .onAppear {
             store.openProjectWindow = { [openWindow] id in openWindow(id: "project", value: id) }
             store.openWelcomeWindow = { [openWindow] in openWindow(id: "welcome") }
@@ -94,6 +93,50 @@ struct WelcomeWindow: View {
             store.openSettingsWindow = { [openSettings] in openSettings() }
             if store.restoreWindows() {
                 dismissWindow(id: "welcome")
+            }
+        }
+    }
+
+    /// Most recently opened first; never-opened ones after, in the order they were added.
+    private var recent: [Project] {
+        store.projects.projects.enumerated().sorted { a, b in
+            switch (a.element.lastOpened, b.element.lastOpened) {
+            case let (x?, y?): x > y
+            case (.some, nil): true
+            case (nil, .some): false
+            case (nil, nil): a.offset < b.offset
+            }
+        }.map(\.element)
+    }
+}
+
+/// What a first-time user sees: what Bridge does, in three lines.
+private struct GettingStarted: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Getting started").font(.title2.weight(.semibold))
+            point("folder", "Open a folder", "It becomes a project with a window of its own.")
+            point("checkmark.shield", "Terminals are sandboxed",
+                  "Programs in them, coding agents included, can change the project but can't read your other files, SSH keys or the Keychain.")
+            point("exclamationmark.shield", "Open terminals when you need them",
+                  "For SSH, Docker and deploys, make an open terminal (⌘⇧T). It's marked in orange.")
+            Link("How sandboxed terminals work", destination: Links.sandbox)
+                .font(.callout)
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    }
+
+    private func point(_ symbol: String, _ title: String, _ detail: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbol)
+                .font(.title2)
+                .foregroundStyle(.tint)
+                .frame(width: 28)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.headline)
+                Text(detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
     }

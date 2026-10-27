@@ -32,6 +32,11 @@ public enum TerminalAction: Sendable {
     case cellSize(width: UInt32, height: UInt32)
     case rendererHealthy(Bool)
     case secureInput(SecureInput)
+    /// Scrollback search opened (with what to look for), closed, and its results.
+    case startSearch(needle: String)
+    case endSearch
+    case searchTotal(Int?)
+    case searchSelected(Int?)
 
     public enum SplitSide: Sendable {
         case right, down, left, up
@@ -159,6 +164,14 @@ public enum TerminalAction: Sendable {
             case GHOSTTY_SECURE_INPUT_OFF: self = .secureInput(.off)
             default: self = .secureInput(.toggle)
             }
+        case GHOSTTY_ACTION_START_SEARCH:
+            self = .startSearch(needle: value.start_search.needle.map { String(cString: $0) } ?? "")
+        case GHOSTTY_ACTION_END_SEARCH:
+            self = .endSearch
+        case GHOSTTY_ACTION_SEARCH_TOTAL:
+            self = .searchTotal(value.search_total.total < 0 ? nil : Int(value.search_total.total))
+        case GHOSTTY_ACTION_SEARCH_SELECTED:
+            self = .searchSelected(value.search_selected.selected < 0 ? nil : Int(value.search_selected.selected))
         default:
             return nil
         }

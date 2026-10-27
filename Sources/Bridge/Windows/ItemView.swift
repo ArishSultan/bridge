@@ -1,5 +1,6 @@
 import AppKit
 import BridgeCore
+import BridgeTerm
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -283,27 +284,35 @@ private struct PaneHeader: View {
     }
 }
 
+/// A state shown by shape as well as color (filled when running, a cross when it failed,
+/// hollow otherwise), with its name for VoiceOver.
 struct StatusDot: View {
     let color: Color
     let help: String
+    var symbol = "circle.fill"
 
-    init(color: Color, help: String) {
+    init(color: Color, help: String, symbol: String = "circle.fill") {
         self.color = color
         self.help = help
+        self.symbol = symbol
     }
 
     init(status: PaneSession.Status) {
         switch status {
         case .running: self.init(color: .green, help: "Running")
-        case .exited(let code?) where code != 0: self.init(color: .red, help: "Exited with code \(code)")
-        case .exited: self.init(color: .gray, help: "Exited")
-        case .stopped: self.init(color: .gray, help: "Stopped")
-        case .notStarted: self.init(color: .gray, help: "Not started")
+        case .exited(let code?) where code != 0: self.init(color: .red, help: "Exited with code \(code)", symbol: "xmark.circle.fill")
+        case .exited: self.init(color: .gray, help: "Exited", symbol: "circle")
+        case .stopped: self.init(color: .gray, help: "Stopped", symbol: "circle")
+        case .notStarted: self.init(color: .gray, help: "Not started", symbol: "circle")
         }
     }
 
     var body: some View {
-        Circle().fill(color).frame(width: 7, height: 7).help(help)
+        Image(systemName: symbol)
+            .font(.system(size: symbol == "circle.fill" ? 7 : 9, weight: .bold))
+            .foregroundStyle(color)
+            .help(help)
+            .accessibilityLabel(help)
     }
 }
 
@@ -323,6 +332,7 @@ struct IsolationBadge: View {
             Image(systemName: "checkmark.shield")
                 .foregroundStyle(.secondary)
                 .help("Sandboxed: writes only inside the project")
+                .accessibilityLabel("Sandboxed")
         }
     }
 }
@@ -366,9 +376,18 @@ struct PaneContainer: View {
                 .help("Open: not sandboxed")
             }
             if case .exited(let code) = session.status {
-                ExitedBar(code: code, ssh: spec?.kind.isSSH ?? false, started: session.startedAt, ended: session.endedAt) {
+                ExitedBar(code: code, ssh: spec?.kind.isSSH ?? false, started: session.startedAt, ended: session.endedAt,
+                          failure: session.launchError) {
                     store.start(pane, in: project.id)
                 }
+            }
+            if !session.denials.isEmpty, !session.searching {
+                DenialBadge(session: session)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            }
+            if session.searching, let surface = session.surface {
+                FindBar(session: session, surface: surface)
+                    .frame(maxHeight: .infinity, alignment: .top)
             }
             if let link = session.hoveredLink {
                 Text(link)
@@ -386,20 +405,82 @@ struct PaneContainer: View {
     }
 }
 
+/// Find in the scrollback (⌘F): Return and ⌘G go to the next match, ⇧Return and ⌘⇧G the
+/// previous one, Escape closes it.
+private struct FindBar: View {
+    let session: PaneSession
+    let surface: TerminalSurfaceView
+
+    @State private var text = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Find in terminal", text: $text)
+                .textFieldStyle(.plain)
+                .frame(width: 200)
+                .focused($focused)
+                .onSubmit { surface.searchNext(backwards: NSEvent.modifierFlags.contains(.shift)) }
+                .onChange(of: text) { surface.search(text) }
+                .onKeyPress(.escape) {
+                    close()
+                    return .handled
+                }
+            Text(count)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 56, alignment: .trailing)
+            Button("Previous Match", systemImage: "chevron.up") { surface.searchNext(backwards: true) }
+                .labelStyle(.iconOnly)
+                .disabled((session.searchTotal ?? 0) == 0)
+            Button("Next Match", systemImage: "chevron.down") { surface.searchNext() }
+                .labelStyle(.iconOnly)
+                .disabled((session.searchTotal ?? 0) == 0)
+            Button("Done", action: close)
+        }
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .glassEffect(in: Capsule())
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .onAppear {
+            text = surface.searchNeedle
+            focused = true
+        }
+    }
+
+    private var count: String {
+        guard !text.isEmpty else { return "" }
+        guard let total = session.searchTotal else { return "…" }
+        guard total > 0 else { return "No matches" }
+        return session.searchSelected.map { "\($0 + 1) of \(total)" } ?? "\(total) found"
+    }
+
+    private func close() {
+        surface.endSearch()
+        surface.window?.makeFirstResponder(surface)
+    }
+}
+
 /// Shown when a program has exited: its code, and starting it again.
 private struct ExitedBar: View {
     let code: Int?
     let ssh: Bool
     let started: Date?
     let ended: Date?
+    var failure: String?
     let restart: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: code == 0 || code == nil ? "checkmark.circle" : "exclamationmark.triangle")
-                .foregroundStyle(code == 0 || code == nil ? Color.secondary : Color.orange)
-            Text(code.map { "Exited with code \($0)" } ?? "Exited")
-            if let ended {
+            let failed = failure != nil || (code ?? 0) != 0
+            Image(systemName: failed ? "exclamationmark.triangle" : "checkmark.circle")
+                .foregroundStyle(failed ? Color.orange : Color.secondary)
+                .accessibilityHidden(true)
+            Text(failure ?? code.map { "Exited with code \($0)" } ?? "Exited")
+            if failure == nil, let ended {
                 Text(timing(ended))
                     .foregroundStyle(.secondary)
                     .monospacedDigit()

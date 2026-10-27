@@ -83,6 +83,14 @@ public final class TerminalApp {
         ghostty_app_tick(app)
     }
 
+    /// Ghostty's resources folder (themes, terminfo, shell integration): in the app bundle, or
+    /// vendor/share when running from a build folder.
+    public static var resourcesDirectory: URL? {
+        useBundledResources()
+        if let bundled = Bundle.main.url(forResource: "ghostty", withExtension: nil) { return bundled }
+        return getenv("GHOSTTY_RESOURCES_DIR").map { URL(fileURLWithPath: String(cString: $0)) }
+    }
+
     /// libghostty finds terminfo and its shell integration scripts in its resources folder.
     /// In the app bundle that's Contents/Resources/ghostty, which it finds itself; when running
     /// from a build folder, point it at vendor/share.

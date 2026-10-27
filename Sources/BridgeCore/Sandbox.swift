@@ -29,12 +29,17 @@ public enum Sandbox {
         public var userCache: String?
         /// The user's temporary folder (not writable; its `xcrun_db` is readable).
         public var temporary: String?
+        /// Added to every logged denial (`bridge-pane-<id>`).
+        public var marker: String?
+        /// The session's own terminal device (or `ttyPlaceholder`, filled in by `bridge-helper
+        /// sandbox` once the terminal exists): the only tty it may read or write by name.
+        public var tty: String?
 
         public init(root: URL, extraWritable: [URL] = [], extraReadable: [URL] = [],
                     home: URL = URL(fileURLWithPath: Paths.home),
                     path: String? = ProcessInfo.processInfo.environment["PATH"],
                     appSocket: String? = nil, userCache: String? = Paths.userCacheDirectory,
-                    temporary: String? = Paths.temporaryDirectory.path) {
+                    temporary: String? = Paths.temporaryDirectory.path, marker: String? = nil, tty: String? = nil) {
             self.root = root
             self.extraWritable = extraWritable
             self.extraReadable = extraReadable
@@ -43,13 +48,15 @@ public enum Sandbox {
             self.appSocket = appSocket
             self.userCache = userCache
             self.temporary = temporary
+            self.marker = marker
+            self.tty = tty
         }
     }
 
     /// Never readable or writable, whatever the profile says: the app's own records (SSH hosts,
     /// the vault account, every command typed, project paths, settings), other projects'
     /// sandbox caches, shell histories, and where tools keep credentials.
-    static func alwaysHidden(home: String) -> [String] {
+    public static func alwaysHidden(home: String) -> [String] {
         [
             Paths.dataDirectory.path, home + "/.config/bridge", Paths.sandboxStateRoot.path,
             home + "/.zsh_history", home + "/.bash_history", home + "/.local/share/fish/fish_history",
@@ -62,7 +69,7 @@ public enum Sandbox {
     /// Never writable, whatever the profile says: what shells and other programs outside the
     /// sandbox run or load later. Writing there would let a sandboxed program run code outside
     /// it (a line in `~/.zshrc`, a binary first on PATH, a LaunchAgent, an agent's hook).
-    static func neverWritable(home: String) -> [String] {
+    public static func neverWritable(home: String) -> [String] {
         [
             ".zshenv", ".zprofile", ".zshrc", ".zlogin", ".zlogout", ".zsh", ".oh-my-zsh", ".bashrc",
             ".bash_profile", ".bash_login", ".profile", ".inputrc", ".config/fish", ".config/zsh",
@@ -122,6 +129,10 @@ public enum Sandbox {
         }
     }
 
+    /// Stands for the session's terminal device in a policy, until `bridge-helper sandbox` puts
+    /// the real one in (the terminal doesn't exist yet when the policy is made).
+    public static let ttyPlaceholder = "@BRIDGE_TTY@"
+
     /// System locations programs need to read: binaries, libraries, frameworks, Homebrew,
     /// settings like the time zone and DNS resolver, and the shell links in `/var/select`.
     static let systemReadable = [
@@ -163,10 +174,13 @@ public enum Sandbox {
 
         let hidden = clean(s.hidden) + alwaysHidden(home: home).map(resolve)
 
+        // Denials are logged with the session's marker, so the app can tell which terminal a
+        // refusal came from and show it there.
+        let tag = context.marker.map { " (with message \(quote($0)))" } ?? ""
         var profile = "(version 1)\n(allow default)\n"
         if s.confineReads {
             // Contents only where allowed; metadata (does it exist, what is it) stays visible.
-            profile += "(deny file-read-data)\n(allow file-read-data\n"
+            profile += "(deny file-read-data\(tag))\n(allow file-read-data\n"
             profile += "  (literal \"/\") (literal \"/etc\") (literal \"/var\") (literal \"/tmp\") (literal \"/private\")\n"
             for path in systemReadable {
                 profile += "  (subpath \"\(path)\")\n"
@@ -190,13 +204,14 @@ public enum Sandbox {
             }
             profile += ")\n"
         }
-        profile += "(deny file-write*)\n(allow file-write*\n"
+        profile += "(deny file-write*\(tag))\n(allow file-write*\n"
         for path in writable {
             profile += pathRules(path)
         }
         // The terminal itself (already open; `/dev/tty` reaches it by name) and the usual device
         // files. Other terminals' ttys are not writable: that would type into them.
         profile += "  (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/tty\") (literal \"/dev/dtracehelper\")\n"
+        if let tty = context.tty { profile += "  (literal \(quote(tty)))\n" }
         profile += "  (regex #\"^/dev/fd/\"))\n"
 
         // `file-read-data` by name: a deny on `file-read*` loses to the more specific
@@ -204,12 +219,18 @@ public enum Sandbox {
         // inside a readable folder readable.
         profile += "(deny file-read* file-read-data file-write*\n"
         for path in hidden { profile += "  (subpath \(quote(path)))\n" }
-        profile += ")\n"
+        profile += "\(tag))\n"
         profile += "(deny file-write*\n"
         for path in neverWritable(home: home).map(resolve) + gitControl(of: context.root) { profile += pathRules(path) }
         profile += "  (regex #\"^\(regexEscape(resolve(home)))/\\.zcompdump\")\n"
         for pattern in gitWorktreeLinks(of: context.root) { profile += "  (regex #\"\(pattern)\")\n" }
-        profile += "  (regex #\"\(protectedTemporary)\"))\n"
+        profile += "  (regex #\"\(protectedTemporary)\")\(tag))\n"
+        // Other terminals' devices: reading one would take its keystrokes, writing would type into
+        // its screen. Only the session's own.
+        if let tty = context.tty {
+            profile += "(deny file-read-data file-write* (regex #\"^/dev/ttys[0-9]+$\")\(tag))\n"
+            profile += "(allow file-read-data file-write* (literal \(quote(tty))))\n"
+        }
         // Back inside the hidden folders: the session's own files, and the scripts its shell loads.
         let reread = context.extraReadable.map { resolve($0.path) }
         if !reread.isEmpty {
@@ -226,18 +247,18 @@ public enum Sandbox {
         switch s.network {
         case .all: break
         case .localhost:
-            profile += "(deny network-outbound (remote ip))\n(allow network-outbound (remote ip \"localhost:*\"))\n"
+            profile += "(deny network-outbound (remote ip)\(tag))\n(allow network-outbound (remote ip \"localhost:*\"))\n"
         case .none:
-            profile += "(deny network-outbound (remote ip))\n(deny network-bind (local ip))\n"
+            profile += "(deny network-outbound (remote ip)\(tag))\n(deny network-bind (local ip)\(tag))\n"
         }
         let blocked = s.blocked.flatMap { programPaths($0.trimmingCharacters(in: .whitespaces), home: home, path: context.path) }
         if !blocked.isEmpty {
             profile += "(deny process-exec\n"
             for path in blocked { profile += "  (literal \(quote(path)))\n" }
-            profile += ")\n"
+            profile += "\(tag))\n"
         }
         if s.blockKeychain {
-            profile += "(deny mach-lookup (global-name \"com.apple.SecurityServer\") (global-name \"com.apple.securityd\"))\n"
+            profile += "(deny mach-lookup (global-name \"com.apple.SecurityServer\") (global-name \"com.apple.securityd\")\(tag))\n"
         }
         // Other programs and services aren't sandboxed, so asking them is closed off too: no
         // scripting other apps, no Spotlight (it would list and search files anywhere), and local
@@ -245,9 +266,9 @@ public enum Sandbox {
         // /var/run (DNS), never the user's ssh-agent, tmux, a Docker daemon or the vault's agent.
         // The app's own socket is reachable by its exact path only; its folder isn't writable, so
         // it can't be swapped for another.
-        profile += "(deny appleevent-send)\n"
-        profile += "(deny mach-lookup (global-name-regex #\"^com\\.apple\\.metadata\\.mds\"))\n"
-        profile += "(deny network-outbound (remote unix-socket))\n(allow network-outbound\n"
+        profile += "(deny appleevent-send\(tag))\n"
+        profile += "(deny mach-lookup (global-name-regex #\"^com\\.apple\\.metadata\\.mds\")\(tag))\n"
+        profile += "(deny network-outbound (remote unix-socket)\(tag))\n(allow network-outbound\n"
         profile += "  (remote unix-socket (path-regex #\"^/private/tmp/\"))\n"
         profile += "  (remote unix-socket (path-regex #\"^/private/var/run/\"))\n"
         for path in [resolve(context.root.path)] + own {
@@ -259,13 +280,13 @@ public enum Sandbox {
         profile += ")\n(deny network-outbound\n"
         profile += "  (remote unix-socket (path-regex #\"\(protectedTemporary)\"))\n"
         profile += "  (remote unix-socket (path-regex #\"^/private/var/run/com\\.apple\\.launchd\\.\"))\n"
-        profile += "  (remote unix-socket (path-regex #\"docker\\.sock$\")))\n"
+        profile += "  (remote unix-socket (path-regex #\"docker\\.sock$\"))\(tag))\n"
         if !s.allowClipboard {
-            profile += "(deny mach-lookup (global-name \"com.apple.pasteboard.1\"))\n"
+            profile += "(deny mach-lookup (global-name \"com.apple.pasteboard.1\")\(tag))\n"
         }
         if !s.allowOpen {
             // LaunchServices: how `open` (and any app) starts apps and opens files and links.
-            profile += "(deny mach-lookup (global-name-regex #\"^com\\.apple\\.lsd\\.\"))\n"
+            profile += "(deny mach-lookup (global-name-regex #\"^com\\.apple\\.lsd\\.\")\(tag))\n"
         }
         return profile
     }

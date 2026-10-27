@@ -116,3 +116,16 @@ struct TerminalConfigTests {
         #expect(text.hasSuffix("\n"))
     }
 }
+
+struct GhosttyThemeTests {
+    @Test func readsAThemeFile() throws {
+        var text = (0..<16).map { "palette = \($0)=#0000\(String(format: "%02x", $0))" }.joined(separator: "\n")
+        text += "\nbackground = #101010\nforeground = #eeeeee\ncursor-color = #ff0000\n"
+        let scheme = try #require(ColorScheme.parseGhosttyTheme(text, id: "ghostty:Test", name: "Test"))
+        #expect(scheme.background.hexString == "#101010")
+        #expect(scheme.ansi?.count == 16)
+        #expect(scheme.ansi?[15].hexString == "#00000f")
+        #expect(scheme.cursor?.hexString == "#ff0000")
+        #expect(ColorScheme.parseGhosttyTheme("foreground = #fff", id: "x", name: "x") == nil)
+    }
+}
