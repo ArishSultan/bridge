@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import BridgeSystem
@@ -145,5 +146,41 @@ struct VaultAgentTests {
         #expect(throws: VaultClient.Failure.self) { try agent.add(id: "again", privateKey: privateKey) }
         agent.stop()
         #expect(!FileManager.default.fileExists(atPath: agent.directory.path))
+    }
+}
+
+struct VaultSSOTests {
+    @Test func pkceAndTokens() throws {
+        // RFC 7636's example verifier and challenge.
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+        let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64URLEncoded
+        #expect(challenge == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
+        let token = VaultClient.randomToken(64)
+        #expect(token.count == 64 && token.allSatisfy { $0.isLetter || $0.isNumber })
+    }
+
+    @Test func saltFromTheTokenResponse() throws {
+        let withOptions: [String: Any] = ["UserDecryptionOptions": ["MasterPasswordUnlock": ["Salt": "me@example.com"]]]
+        #expect(VaultClient.ssoSalt(withOptions) == "me@example.com")
+        // Otherwise the access token's email claim.
+        let claims = try JSONSerialization.data(withJSONObject: ["email": "jwt@example.com"]).base64URLEncoded
+        #expect(VaultClient.ssoSalt(["access_token": "h.\(claims).s"]) == "jwt@example.com")
+        #expect(VaultClient.ssoSalt([:]) == nil)
+    }
+
+    @Test func loopbackListenerHandsOverTheCallback() async throws {
+        let listener = try LoopbackListener(ports: 18065...18070)
+        defer { listener.close() }
+        let port = listener.port
+        let waiting = Task { try await listener.waitForCallback(timeout: 10) }
+        // A request without a code (a favicon) is answered and ignored.
+        let (_, favicon) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/favicon.ico")!)
+        #expect((favicon as? HTTPURLResponse)?.statusCode == 404)
+        let (page, response) = try await URLSession.shared.data(from: URL(string: "http://localhost:\(port)/?code=abc&state=xyz_identifier=bridge")!)
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        #expect(String(decoding: page, as: UTF8.self).contains("Signed in"))
+        let query = try await waiting.value
+        #expect(query["code"] == "abc")
+        #expect(query["state"] == "xyz_identifier=bridge")
     }
 }

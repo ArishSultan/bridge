@@ -36,6 +36,18 @@ extension Store {
     /// the password).
     func unlockVault(_ login: VaultClient.Login, lockMinutes: UInt32) async throws -> UnlockResult {
         let unlocked = try await VaultClient.unlock(login)
+        return try await load(unlocked, server: login.server, email: login.email, deviceID: login.deviceID, lockMinutes: lockMinutes)
+    }
+
+    /// Finish a single sign-on with the master password, and load the keys.
+    func unlockVault(sso: VaultClient.SSOSignIn, password: String, deviceID: String, lockMinutes: UInt32,
+                     twoFactor: (provider: Int, code: String)?) async throws -> UnlockResult {
+        let (unlocked, email) = try await VaultClient.unlock(sso: sso, password: password, deviceID: deviceID, twoFactor: twoFactor)
+        return try await load(unlocked, server: sso.server, email: email, deviceID: deviceID, lockMinutes: lockMinutes)
+    }
+
+    private func load(_ unlocked: VaultClient.Unlocked, server: String, email: String, deviceID: String,
+                      lockMinutes: UInt32) async throws -> UnlockResult {
         let helper = Self.helperPath
         // Starting the agent and ssh-add block, so do it off the main thread.
         let (session, keys, failures) = try await Task.detached {
@@ -58,8 +70,8 @@ extension Store {
         vaultKeys = keys
         vaultLastUsed = Date()
         profiles.vault = VaultAccount(
-            server: (try? VaultClient.serverURL(login.server)) ?? login.server,
-            email: login.email.trimmingCharacters(in: .whitespaces), deviceID: login.deviceID, lockMinutes: lockMinutes)
+            server: (try? VaultClient.serverURL(server)) ?? server,
+            email: email.trimmingCharacters(in: .whitespaces), deviceID: deviceID, lockMinutes: lockMinutes)
         startVaultTimer()
         forwards.reloadVaultForwards()
         return UnlockResult(loaded: keys.count, skipped: unlocked.skipped, failures: failures)

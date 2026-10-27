@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Logging in to Vaultwarden and reading the vault's SSH keys. Nothing is cached on disk and no
@@ -127,7 +128,12 @@ public enum VaultClient {
         let masterKey = try VaultCrypto.masterKey(password: login.password, email: login.email, kdf: kdf)
         let hash = VaultCrypto.masterPasswordHash(masterKey: masterKey, password: login.password)
         let token = try await self.token(server: server, login: login, hash: hash)
+        return try await keys(server: server, token: token, masterKey: masterKey)
+    }
 
+    /// Decrypt the account key the token response carries with the master key, then read the
+    /// vault's SSH keys.
+    static func keys(server: String, token: Any, masterKey: Data) async throws -> Unlocked {
         guard let wrapped = field(token, "Key") as? String else {
             throw Failure.rejected("the server did not send the account key")
         }
@@ -138,7 +144,7 @@ public enum VaultClient {
         do {
             userKey = try VaultCrypto.SymmetricKey(bytes: try wrapping.decrypt(wrapped))
         } catch let error as VaultCrypto.Failure {
-            throw Failure.rejected(error.localizedDescription)
+            throw Failure.rejected(error == .tampered ? "Wrong master password." : error.localizedDescription)
         }
 
         let access = field(token, "access_token") as? String ?? ""
@@ -146,6 +152,124 @@ public enum VaultClient {
         request.setValue("Bearer \(access)", forHTTPHeaderField: "Authorization")
         let sync = try await json(request, what: "sync response")
         return sshKeys(sync, userKey: userKey)
+    }
+
+    // MARK: - Single sign-on
+
+    /// A sign-in through the server's single sign-on (Vaultwarden's OpenID Connect), as the
+    /// Bitwarden command-line client does it: the browser goes to the server, which sends it to
+    /// the identity provider and back to a one-time listener on `localhost` with a code; the code
+    /// (with its PKCE verifier) gets the login token. The vault is still encrypted with the
+    /// master password, so unlocking needs it after that.
+    public struct SSOSignIn: Sendable {
+        public let server: String
+        let code: String
+        let verifier: String
+        let redirectURI: String
+    }
+
+    /// The ports Vaultwarden accepts for a command-line client's `http://localhost` redirect.
+    static let ssoPorts: ClosedRange<UInt16> = 8065...8070
+
+    /// Sign in in the browser (`open` shows the page) and wait for it to come back, up to five
+    /// minutes.
+    public static func signInWithSSO(server input: String, open: @MainActor @Sendable (URL) -> Void) async throws -> SSOSignIn {
+        let server = try serverURL(input)
+        let listener = try LoopbackListener(ports: ssoPorts)
+        defer { listener.close() }
+        let redirectURI = "http://localhost:\(listener.port)"
+        let verifier = randomToken(64)
+        let state = randomToken(64) + "_identifier=bridge"
+        let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64URLEncoded
+
+        guard var components = URLComponents(string: server + "/identity/connect/authorize") else {
+            throw Failure.rejected("the server address is not valid")
+        }
+        components.queryItems = [
+            URLQueryItem(name: "client_id", value: "cli"),
+            URLQueryItem(name: "redirect_uri", value: redirectURI),
+            URLQueryItem(name: "response_type", value: "code"),
+            URLQueryItem(name: "scope", value: "api offline_access"),
+            URLQueryItem(name: "state", value: state),
+            URLQueryItem(name: "code_challenge", value: challenge),
+            URLQueryItem(name: "code_challenge_method", value: "S256"),
+            URLQueryItem(name: "response_mode", value: "query"),
+            URLQueryItem(name: "domain_hint", value: "bridge"),
+        ]
+        guard let url = components.url else { throw Failure.rejected("the server address is not valid") }
+        await open(url)
+
+        let query = try await listener.waitForCallback(timeout: 300)
+        if let error = query["error"] {
+            throw Failure.rejected("Single sign-on failed: \(query["error_description"] ?? error)")
+        }
+        // The state comes back as sent (the part before the identifier is what's checked, as
+        // Bitwarden's own clients do), so this answer is for this sign-in.
+        guard let returned = query["state"],
+              returned.components(separatedBy: "_identifier=").first == state.components(separatedBy: "_identifier=").first
+        else { throw Failure.rejected("Single sign-on came back for a different sign-in. Try again.") }
+        guard let code = query["code"], !code.isEmpty else {
+            throw Failure.rejected("Single sign-on came back without a code.")
+        }
+        return SSOSignIn(server: server, code: code, verifier: verifier, redirectURI: redirectURI)
+    }
+
+    /// Finish a single sign-on: get the token with the code, then decrypt with the master
+    /// password. The email the vault's key is salted with comes from the server. Throws
+    /// `.twoFactor` when a two-step code is needed; call again with it (the code stays valid).
+    public static func unlock(sso: SSOSignIn, password: String, deviceID: String,
+                              twoFactor: (provider: Int, code: String)? = nil) async throws -> (unlocked: Unlocked, email: String) {
+        var form = [
+            ("grant_type", "authorization_code"),
+            ("code", sso.code),
+            ("code_verifier", sso.verifier),
+            ("redirect_uri", sso.redirectURI),
+            ("scope", "api offline_access"),
+            ("client_id", "cli"),
+            ("deviceType", "24"),
+            ("deviceName", "Bridge"),
+            ("deviceIdentifier", deviceID),
+        ]
+        if let (provider, code) = twoFactor {
+            form += [("twoFactorProvider", "\(provider)"), ("twoFactorToken", code.trimmingCharacters(in: .whitespaces)),
+                     ("twoFactorRemember", "0")]
+        }
+        let token = try await tokenRequest(server: sso.server, form: form)
+
+        if let options = field(token, "UserDecryptionOptions"), (field(options, "HasMasterPassword") as? Bool) == false {
+            throw Failure.rejected("This account has no master password. Bridge needs one to decrypt the vault's keys; set one in the web vault.")
+        }
+        guard let email = ssoSalt(token) else { throw Failure.rejected("the server did not say which account signed in") }
+        guard let kdf = kdf(from: token) else {
+            throw Failure.rejected("the server sent key derivation settings this app does not know")
+        }
+        guard VaultCrypto.isAcceptable(kdf) else {
+            throw Failure.rejected("the server asked for key derivation settings outside Bitwarden's limits")
+        }
+        let masterKey = try VaultCrypto.masterKey(password: password, email: email, kdf: kdf)
+        return (try await keys(server: sso.server, token: token, masterKey: masterKey), email)
+    }
+
+    /// The email the master key is salted with: the decryption options' salt, else the access
+    /// token's email.
+    static func ssoSalt(_ token: Any) -> String? {
+        if let unlock = field(token, "UserDecryptionOptions").flatMap({ field($0, "MasterPasswordUnlock") }),
+           let salt = field(unlock, "Salt") as? String, !salt.isEmpty {
+            return salt
+        }
+        guard let access = field(token, "access_token") as? String else { return nil }
+        let parts = access.split(separator: ".")
+        guard parts.count >= 2, let payload = Data(base64URLEncoded: String(parts[1])),
+              let claims = try? JSONSerialization.jsonObject(with: payload) as? [String: Any]
+        else { return nil }
+        return claims["email"] as? String
+    }
+
+    /// Letters and digits from the system's secure random source.
+    static func randomToken(_ length: Int) -> String {
+        let alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+        var generator = SystemRandomNumberGenerator()
+        return String((0..<length).map { _ in alphabet[Int.random(in: 0..<alphabet.count, using: &generator)] })
     }
 
     /// Ask the server to email a two-step code.
@@ -221,6 +345,12 @@ public enum VaultClient {
             form += [("twoFactorProvider", "\(provider)"), ("twoFactorToken", code.trimmingCharacters(in: .whitespaces)),
                      ("twoFactorRemember", "0")]
         }
+        return try await tokenRequest(server: server, form: form)
+    }
+
+    /// Post a login form to the token endpoint; a refusal says why (a two-step code is needed,
+    /// or the server's message).
+    static func tokenRequest(server: String, form: [(String, String)]) async throws -> Any {
         var request = URLRequest(url: try endpoint(server, "/identity/connect/token"))
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
@@ -254,6 +384,10 @@ public enum VaultClient {
         let message = field(value, "error_description") as? String
             ?? (field(value, "ErrorModel").flatMap { field($0, "Message") } as? String)
             ?? "the server refused the login"
+        // A server that only allows single sign-on refuses the master password login.
+        if message.localizedCaseInsensitiveContains("sso") {
+            return .rejected(message + " Sign in with SSO instead.")
+        }
         return .rejected(message)
     }
 
@@ -318,5 +452,19 @@ public enum VaultClient {
         } catch {
             throw Failure.network(error.localizedDescription)
         }
+    }
+}
+
+extension Data {
+    /// Base64url without padding, as PKCE and JWTs use it.
+    var base64URLEncoded: String {
+        base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    init?(base64URLEncoded text: String) {
+        var base64 = text.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while base64.count % 4 != 0 { base64 += "=" }
+        self.init(base64Encoded: base64)
     }
 }
