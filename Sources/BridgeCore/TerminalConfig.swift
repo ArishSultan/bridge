@@ -19,16 +19,18 @@ public enum TerminalConfig {
     }
 
     /// The entries for `settings`, with "match-app" schemes resolved for a dark or light window.
-    public static func entries(for settings: Settings, dark: Bool) -> [Entry] {
+    /// `naturalLineHeight` is the font's own line height as a multiple of its size (from its
+    /// metrics), so v1's line height (a multiple of the size) maps exactly.
+    public static func entries(for settings: Settings, dark: Bool, naturalLineHeight: Double = 1.2) -> [Entry] {
         var entries: [Entry] = []
         func add(_ key: String, _ value: String) { entries.append(Entry(key, value)) }
         func add(_ key: String, _ value: Bool) { add(key, value ? "true" : "false") }
 
         // Font. v1's line height multiplied the font size; Ghostty adjusts the font's own line
-        // height, which for typical monospace fonts is about 1.2× the size.
+        // height, so scale by the ratio of the two.
         add("font-family", settings.fontFamily)
         add("font-size", format(settings.fontSize))
-        let cellHeight = (settings.lineHeight / 1.2 - 1) * 100
+        let cellHeight = (settings.lineHeight / max(naturalLineHeight, 0.5) - 1) * 100
         add("adjust-cell-height", "\(Int(cellHeight.rounded()))%")
         if settings.letterSpacing != 0 {
             add("adjust-cell-width", "\(Int(settings.letterSpacing.rounded()))")
@@ -49,7 +51,7 @@ public enum TerminalConfig {
         if let cursor = scheme.cursor {
             add("cursor-color", cursor.hexString)
         }
-        for (index, color) in scheme.ansi.enumerated() {
+        for (index, color) in (scheme.ansi ?? []).enumerated() {
             add("palette", "\(index)=\(color.hexString)")
         }
 
@@ -108,8 +110,8 @@ public enum TerminalConfig {
     ] + (1...9).map { "super+\($0)" }
 
     /// The entries as the text of a Ghostty config file.
-    public static func fileContents(for settings: Settings, dark: Bool) -> String {
-        entries(for: settings, dark: dark)
+    public static func fileContents(for settings: Settings, dark: Bool, naturalLineHeight: Double = 1.2) -> String {
+        entries(for: settings, dark: dark, naturalLineHeight: naturalLineHeight)
             .map { "\($0.key) = \($0.value)" }
             .joined(separator: "\n") + "\n"
     }

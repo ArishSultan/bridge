@@ -34,6 +34,10 @@ struct ProjectWindow: View {
         } detail: {
             detail(project)
         }
+        .background(store.chrome.surface)
+        .toolbarBackground(store.chrome.surface, for: .windowToolbar)
+        .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
+        .preferredColorScheme(store.chrome.isDark ? .dark : .light)
         .navigationTitle(project.name)
         .navigationSubtitle(controller.isGlobal ? "" : Paths.tilde(project.root.path))
         .toolbar { ProjectToolbar(project: project, controller: controller) }
@@ -165,6 +169,7 @@ struct ProjectWindow: View {
     private func attach(_ window: NSWindow) {
         controller.window = window
         window.tabbingMode = .disallowed
+        window.backgroundColor = Store.shared.chrome.nsSurface
         closeGuard = WindowCloseGuard(
             window: window,
             shouldClose: { window in
@@ -193,11 +198,8 @@ private struct ProjectToolbar: ToolbarContent {
     @Environment(\.openWindow) private var openWindow
 
     var body: some ToolbarContent {
+        if !controller.isGlobal {
         ToolbarItem(placement: .navigation) {
-            if controller.isGlobal {
-                Image(systemName: "globe")
-                    .foregroundStyle(.secondary)
-            } else {
                 Menu {
                     Button("Open in Zed", systemImage: "chevron.left.forwardslash.chevron.right") { openInZed(project.root) }
                     Button("Reveal in Finder", systemImage: "folder") {
@@ -209,11 +211,11 @@ private struct ProjectToolbar: ToolbarContent {
                         controller.confirmRemoveProject = true
                     }
                 } label: {
-                    ProjectIcon(project: project, size: 20)
+                    Label("Project", systemImage: "folder")
                 }
                 .menuIndicator(.hidden)
                 .help(Paths.tilde(project.root.path))
-            }
+        }
         }
 
         // Controls of the terminal on screen when the item is a single terminal.

@@ -22,6 +22,8 @@ struct Sidebar: View {
             }
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .background(store.chrome.surface)
         .safeAreaInset(edge: .bottom) {
             HStack(spacing: 8) {
                 Button {

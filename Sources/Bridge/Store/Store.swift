@@ -129,8 +129,21 @@ final class Store {
     var scheme: BridgeCore.ColorScheme { BridgeCore.ColorScheme.resolve(settings.colorScheme, dark: isDark) }
 
     private var terminalConfiguration: String {
-        TerminalConfig.fileContents(for: settings, dark: isDark)
+        TerminalConfig.fileContents(for: settings, dark: isDark, naturalLineHeight: Self.naturalLineHeight(settings))
     }
+
+    /// The font's own line height (ascent, descent and leading) as a multiple of its size.
+    static func naturalLineHeight(_ settings: BridgeCore.Settings) -> Double {
+        let size = CGFloat(settings.fontSize)
+        guard let font = NSFont(name: settings.fontFamily, size: size) ?? NSFont.userFixedPitchFont(ofSize: size) else { return 1.2 }
+        let ctFont = font as CTFont
+        let height = CTFontGetAscent(ctFont) + CTFontGetDescent(ctFont) + CTFontGetLeading(ctFont)
+        return Double(height / size)
+    }
+
+    /// The window chrome, derived from the terminal's colors as v1 did: everything but the
+    /// terminal is one surface a step toward the foreground; borders and the active row are mixes.
+    var chrome: Chrome { Chrome(scheme) }
 
     private func settingsChanged(from old: BridgeCore.Settings) {
         applyAppTheme()
@@ -676,3 +689,4 @@ struct VaultKey: Identifiable, Equatable, Sendable {
     let id: String
     let name: String
 }
+

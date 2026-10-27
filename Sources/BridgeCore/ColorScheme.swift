@@ -5,24 +5,27 @@ public struct ColorScheme: Identifiable, Equatable, Sendable {
     public let foreground: RGB
     public let background: RGB
     public let cursor: RGB?
-    public let ansi: [RGB]
+    /// The 16 ANSI colors; nil keeps the terminal's defaults ("match app", as in v1).
+    public let ansi: [RGB]?
 
     /// The pseudo-scheme that follows the app's light or dark appearance.
     public static let matchApp = "match-app"
-
-    /// The schemes "match-app" resolves to.
-    public static let defaultDark = "one-dark"
-    public static let defaultLight = "github-light"
 
     public static func find(_ id: String) -> ColorScheme? {
         all.first { $0.id == id }
     }
 
-    /// The scheme to draw with: the chosen one, or for "match-app" the default for the appearance.
+    /// The scheme to draw with: the chosen one, or for "match-app" v1's app colors: near-black
+    /// (or white) with the terminal's default ANSI colors.
     public static func resolve(_ id: String, dark: Bool) -> ColorScheme {
         if let scheme = find(id) { return scheme }
-        return find(dark ? defaultDark : defaultLight)!
+        return dark ? matchAppDark : matchAppLight
     }
+
+    /// gpui-component's default dark and light themes (neutral-950 and neutral-50), which v1's
+    /// "match app" drew with.
+    public static let matchAppDark = ColorScheme(id: matchApp, name: "Match app theme", foreground: 0xfafafa, background: 0x0a0a0a, cursor: nil, ansi: nil)
+    public static let matchAppLight = ColorScheme(id: matchApp, name: "Match app theme", foreground: 0x0a0a0a, background: 0xffffff, cursor: nil, ansi: nil)
 
     /// `(id, label)` pairs for the settings picker, starting with the app-matched scheme.
     public static var options: [(id: String, name: String)] {
@@ -32,18 +35,24 @@ public struct ColorScheme: Identifiable, Equatable, Sendable {
     /// True when the background is light, so the window chrome should be too.
     public var isLight: Bool { background.luminance > 0.5 }
 
-    init(id: String, name: String, foreground: UInt32, background: UInt32, cursor: UInt32?, ansi: [UInt32]) {
-        precondition(ansi.count == 16)
+    init(id: String, name: String, foreground: UInt32, background: UInt32, cursor: UInt32?, ansi: [UInt32]?) {
+        precondition(ansi == nil || ansi?.count == 16)
         self.id = id
         self.name = name
         self.foreground = RGB(hex: foreground)
         self.background = RGB(hex: background)
         self.cursor = cursor.map(RGB.init(hex:))
-        self.ansi = ansi.map(RGB.init(hex:))
+        self.ansi = ansi?.map(RGB.init(hex:))
     }
 }
 
 public struct RGB: Equatable, Sendable {
+    /// `share` of the way from this color to `other`.
+    public func mix(_ other: RGB, _ share: Double) -> RGB {
+        func blend(_ a: UInt8, _ b: UInt8) -> UInt32 { UInt32((Double(a) + (Double(b) - Double(a)) * share).rounded()) }
+        return RGB(hex: blend(r, other.r) << 16 | blend(g, other.g) << 8 | blend(b, other.b))
+    }
+
     public let r: UInt8
     public let g: UInt8
     public let b: UInt8

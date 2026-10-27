@@ -69,7 +69,7 @@ private struct SplitContainer<First: View, Second: View>: View {
                            height: horizontal ? geometry.size.height : secondLength)
                     .offset(x: horizontal ? firstLength + divider : 0, y: horizontal ? 0 : firstLength + divider)
                 Rectangle()
-                    .fill(Color(nsColor: .separatorColor))
+                    .fill(Store.shared.chrome.border)
                     .frame(width: horizontal ? divider : geometry.size.width,
                            height: horizontal ? geometry.size.height : divider)
                     .offset(x: horizontal ? firstLength : 0, y: horizontal ? 0 : firstLength)
@@ -260,7 +260,7 @@ private struct PaneHeader: View {
         .font(.callout)
         .padding(.horizontal, 8)
         .frame(height: 28)
-        .background(focused ? Color.accentColor.opacity(0.14) : Color(nsColor: .windowBackgroundColor))
+        .background(focused ? Store.shared.chrome.active : Store.shared.chrome.surface)
         .overlay(alignment: .bottom) { Divider() }
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { controller.renaming = .pane(pane) }
@@ -355,6 +355,15 @@ struct PaneContainer: View {
                         .buttonStyle(.borderedProminent)
                 }
                 .foregroundStyle(Color(store.scheme.foreground))
+            }
+            // Open (unsandboxed) terminals in a project get v1's amber edge.
+            if spec?.effectiveIsolation.isOpen == true, !store.isGlobal(project.id) {
+                HStack(spacing: 0) {
+                    Rectangle().fill(Color.orange.opacity(0.85)).frame(width: 2)
+                    Spacer(minLength: 0)
+                }
+                .allowsHitTesting(false)
+                .help("Open: not sandboxed")
             }
             if case .exited(let code) = session.status {
                 ExitedBar(code: code, ssh: spec?.kind.isSSH ?? false) { store.start(pane, in: project.id) }

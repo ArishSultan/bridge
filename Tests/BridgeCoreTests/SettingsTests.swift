@@ -84,8 +84,14 @@ struct TerminalConfigTests {
 
     @Test func matchAppFollowsAppearance() {
         let settings = Settings()
-        #expect(values("background", TerminalConfig.entries(for: settings, dark: true)) == ["#282c34"])
+        // v1's "match app": near-black or white, with the terminal's default ANSI colors.
+        let dark = TerminalConfig.entries(for: settings, dark: true)
+        #expect(values("background", dark) == ["#0a0a0a"])
+        #expect(values("foreground", dark) == ["#fafafa"])
+        #expect(values("palette", dark).isEmpty)
         #expect(values("background", TerminalConfig.entries(for: settings, dark: false)) == ["#ffffff"])
+        // Line height 1.3 of the size, for a font whose own is 1.25: 4% taller cells.
+        #expect(values("adjust-cell-height", TerminalConfig.entries(for: settings, dark: true, naturalLineHeight: 1.25)) == ["4%"])
     }
 
     @Test func mapsBehaviorSettings() {
