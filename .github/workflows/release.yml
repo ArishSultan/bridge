@@ -49,7 +49,7 @@ jobs:
       tag: ${{ steps.release.outputs.tag_name }}
     steps:
       - id: release
-        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           # Pull requests opened with the default token don't start CI. Add a fine-grained token
           # (contents + pull requests: read and write) as RELEASE_PLEASE_TOKEN to get CI on them.
@@ -76,7 +76,7 @@ jobs:
       HAS_DEVELOPER_ID: ${{ secrets.DEVELOPER_ID_P12 != '' }}
       HAS_SPARKLE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY != '' }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.TAG }}
           submodules: true
@@ -145,7 +145,7 @@ jobs:
           cp build/appcast/appcast.xml build/dist/appcast.xml
 
       - name: Attest where the files came from
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.2.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v3.2.0
         with:
           subject-path: |
             build/dist/*.dmg
