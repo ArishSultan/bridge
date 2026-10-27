@@ -1,5 +1,6 @@
 import AppKit
 import BridgeCore
+import BridgeSystem
 import BridgeTerm
 import Observation
 
@@ -14,7 +15,7 @@ final class Store {
         didSet {
             guard settings != oldValue else { return }
             settings.sanitize()
-            settingsChanged()
+            settingsChanged(from: oldValue)
         }
     }
 
@@ -45,6 +46,13 @@ final class Store {
     @ObservationIgnored private var appearanceObservation: NSKeyValueObservation?
     @ObservationIgnored private var restored = false
 
+    /// Every command run in Bridge's terminals (and the shell's own history, if imported).
+    @ObservationIgnored private(set) var history = History()
+    /// Where shells report prompts and commands.
+    @ObservationIgnored private var shellServer: ShellEventServer?
+    /// Pane of each shell token.
+    @ObservationIgnored private var tokens: [String: ID] = [:]
+
     private init() {
         var settings = Settings.load()
         settings.sanitize()
@@ -65,7 +73,31 @@ final class Store {
         appearanceObservation = NSApp.observe(\.effectiveAppearance) { _, _ in
             Task { @MainActor in Store.shared.appearanceChanged() }
         }
+
+        do {
+            try ShellIntegration.install(settings)
+            shellServer = try ShellEventServer { connection, fields in
+                Store.shared.shellMessage(connection, fields)
+            }
+        } catch {
+            NSLog("Bridge: shell integration unavailable: %@", "\(error)")
+        }
+        let importShellHistory = settings.importShellHistory
+        Task.detached {
+            let history = History.load(importShellHistory: importShellHistory)
+            await MainActor.run { Store.shared.history = history }
+        }
+        Attention.shared.start()
     }
+
+    /// Before quitting.
+    func shutdown() {
+        shellServer?.shutdown()
+    }
+
+    func tokensLookup(_ token: String) -> ID? { tokens[token] }
+
+    func record(_ entry: HistoryEntry) { history.record(entry) }
 
     // MARK: - Settings and appearance
 
@@ -75,8 +107,16 @@ final class Store {
         TerminalConfig.fileContents(for: settings, dark: isDark)
     }
 
-    private func settingsChanged() {
+    private func settingsChanged(from old: BridgeCore.Settings) {
         applyAppTheme()
+        try? ShellIntegration.writePrompts(settings)
+        if settings.importShellHistory != old.importShellHistory {
+            let importShellHistory = settings.importShellHistory
+            Task.detached {
+                let history = History.load(importShellHistory: importShellHistory)
+                await MainActor.run { Store.shared.history = history }
+            }
+        }
         isDark = Self.computeDark(settings.appTheme)
         terminal?.setColorScheme(dark: isDark)
         terminal?.update(configuration: terminalConfiguration)
@@ -287,7 +327,7 @@ final class Store {
         update(projectID) { $0.active = item }
         for pane in project.view(item)?.panes ?? [] {
             startIfNeeded(pane, in: projectID)
-            sessions[pane]?.needsAttention = false
+            if let session = sessions[pane] { Attention.shared.clear(session) }
         }
     }
 
@@ -426,7 +466,19 @@ final class Store {
         guard let terminal, let project = project(projectID), let spec = project.terminal(pane) else { return }
         let session = session(pane, in: projectID)
         session.detach(status: .stopped)
-        let plan = Launch.plan(for: spec, in: project, settings: settings)
+        var plan = Launch.plan(for: spec, in: project, settings: settings)
+        // Shells get Bridge's shell integration: prompt settings, and reports to the app.
+        if case .shell = spec.kind, settings.shellIntegration, let shellServer {
+            if let old = session.token { tokens[old] = nil }
+            let token = UUID().uuidString
+            tokens[token] = pane
+            session.token = token
+            let integration = ShellIntegration.launch(
+                shell: settings.shell, loginShell: Launch.loginShell(settings),
+                socket: shellServer.path, token: token, helper: Self.helperPath)
+            plan.command = integration.command ?? plan.command
+            plan.environment.merge(integration.variables) { _, new in new }
+        }
         let options = TerminalSurfaceView.Options(
             workingDirectory: plan.folder.path,
             command: plan.command,
@@ -436,7 +488,7 @@ final class Store {
             let surface = try TerminalSurfaceView(app: terminal, options: options, context: .window)
             surface.onFocus = { [weak self] in
                 self?.setFocused(projectID, pane: pane)
-                self?.sessions[pane]?.needsAttention = false
+                if let session = self?.sessions[pane] { Attention.shared.clear(session) }
             }
             surface.interceptKey = { [weak self, weak session] event in
                 guard let self, let session else { return false }
@@ -468,6 +520,12 @@ final class Store {
 
     /// Keys for a terminal whose program has exited: Enter starts it again, others are ignored.
     private func intercept(_ event: NSEvent, session: PaneSession) -> Bool {
+        // ⌃R at a prompt: command history. Inside a program, ⌃R is the program's.
+        if session.atPrompt, event.modifierFlags.intersection([.control, .command, .option, .shift]) == .control,
+           event.charactersIgnoringModifiers == "r", let controller = controllers[session.projectID] {
+            controller.historyPane = session.id
+            return true
+        }
         guard case .exited = session.status else { return false }
         if event.keyCode == 36 || event.keyCode == 76 { // Return, keypad Enter
             start(session.id, in: session.projectID)
@@ -501,6 +559,9 @@ extension Store: TerminalAppDelegate {
         case .childExited(let code):
             guard let session else { return false }
             session.status = .exited(code: Int(code))
+            if !session.stoppedByHand, project(session.projectID)?.terminal(session.id)?.kind.isTask == true {
+                Attention.shared.raise(session, body: code == 0 ? "finished" : "failed (exit code \(code))")
+            }
             // A task that exits on its own may start again.
             if !session.stoppedByHand,
                case .task(_, _, true) = project(session.projectID)?.terminal(session.id)?.kind {
@@ -512,10 +573,9 @@ extension Store: TerminalAppDelegate {
             }
             return true
         case .ringBell:
-            if let session, !(surface?.window?.isKeyWindow ?? false) {
-                session.needsAttention = true
+            if let session, settings.notifyOnBell {
+                Attention.shared.raise(session, body: "needs your attention")
             }
-            if !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
             return true
         case .openURL(let link):
             let url = URL(string: link).flatMap { $0.scheme == nil ? nil : $0 } ?? URL(fileURLWithPath: link)

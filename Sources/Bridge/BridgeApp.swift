@@ -55,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
             }
             store.rememberOpenWindows()
+            store.shutdown()
             return .terminateNow
         }
     }

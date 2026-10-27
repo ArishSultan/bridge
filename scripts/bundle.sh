@@ -16,8 +16,10 @@ bin=$(swift build -c release --arch arm64 --show-bin-path)
 
 app="build/$name.app"
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Helpers"
 cp "$bin/Bridge" "$app/Contents/MacOS/Bridge"
+# Messages from bash, SSH password prompts, and the guard around child processes.
+cp "$bin/bridge-helper" "$app/Contents/Helpers/bridge-helper"
 
 # libghostty's resources: terminfo (xterm-ghostty) and the shell integration scripts. It finds
 # them by looking for Contents/Resources/terminfo in the bundle it runs from.
@@ -61,5 +63,6 @@ cat > "$app/Contents/Info.plist" <<PLIST
 PLIST
 
 # An ad-hoc signature, so macOS treats each build as the same app.
+codesign --force --sign - "$app/Contents/Helpers/bridge-helper"
 codesign --force --sign - "$app"
 echo "Built $app"

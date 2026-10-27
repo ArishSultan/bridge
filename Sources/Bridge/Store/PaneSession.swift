@@ -34,6 +34,18 @@ final class PaneSession: Identifiable {
     @ObservationIgnored var stoppedByHand = false
     @ObservationIgnored var restartTask: Task<Void, Never>?
 
+    // Reported by the shell integration.
+    /// Identifies this pane's shell on the app's socket.
+    @ObservationIgnored var token: String?
+    /// The shell is waiting at its prompt (not running a command).
+    var atPrompt = false
+    /// The command running now, its folder and when it started.
+    @ObservationIgnored var running: (command: String, cwd: String, started: Date)?
+    /// The shell's PATH, for completing command names.
+    @ObservationIgnored var path: String?
+    /// The shell's folder, as last reported.
+    @ObservationIgnored var shellDirectory: String?
+
     init(id: ID, projectID: ID) {
         self.id = id
         self.projectID = projectID
@@ -50,6 +62,8 @@ final class PaneSession: Identifiable {
     /// End the program and drop the surface.
     func detach(status: Status) {
         restartTask?.cancel()
+        atPrompt = false
+        running = nil
         surface?.onChange = nil
         surface?.onFocus = nil
         surface?.interceptKey = nil
@@ -58,10 +72,16 @@ final class PaneSession: Identifiable {
         self.status = status
     }
 
+    /// The shell reported its folder.
+    func report(directory: String) {
+        shellDirectory = directory
+        self.directory = directory
+    }
+
     private func refresh() {
         guard let surface else { return }
         title = surface.title
-        directory = surface.workingDirectory
+        directory = surface.workingDirectory ?? shellDirectory
         hoveredLink = surface.hoveredLink
         if surface.bell { needsAttention = true }
     }

@@ -46,6 +46,9 @@ struct ProjectWindow: View {
         .sheet(isPresented: $controller.showProjectSheet) {
             ProjectSheet(project: project)
         }
+        .sheet(item: historyTarget) { target in
+            HistorySheet(pane: target.id)
+        }
         .confirmationDialog(
             switchTitle, isPresented: pendingSwitchShown, titleVisibility: .visible
         ) {
@@ -111,6 +114,12 @@ struct ProjectWindow: View {
         Binding(
             get: { store.sidebarOpen ? .all : .detailOnly },
             set: { store.sidebarOpen = $0 != .detailOnly })
+    }
+
+    private var historyTarget: Binding<PaneTarget?> {
+        Binding(
+            get: { controller.historyPane.map(PaneTarget.init) },
+            set: { controller.historyPane = $0?.id })
     }
 
     private var pendingSwitchShown: Binding<Bool> {
@@ -198,6 +207,14 @@ private struct ProjectToolbar: ToolbarContent {
                 .help("Add a terminal to the right (⌘D)")
             Button("Split Down", systemImage: "rectangle.split.1x2") { controller.split(.vertical) }
                 .help("Add a terminal below (⌘⇧D)")
+        }
+
+        ToolbarItem {
+            Button("History", systemImage: "clock.arrow.circlepath") {
+                controller.historyPane = controller.focusedPane
+            }
+            .help("Command history (⌃R)")
+            .disabled(controller.focusedPane == nil)
         }
 
         if !controller.isGlobal {
@@ -332,4 +349,9 @@ func openInZed(_ folder: URL) {
     // The `zed` command when installed, otherwise the app.
     process.arguments = ["sh", "-lc", "command -v zed >/dev/null && exec zed \"$0\" || exec open -a Zed \"$0\"", folder.path]
     try? process.run()
+}
+
+/// A pane, as an identifiable sheet item.
+struct PaneTarget: Identifiable {
+    let id: ID
 }

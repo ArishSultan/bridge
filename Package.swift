@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v26)],
     products: [
         .executable(name: "Bridge", targets: ["Bridge"]),
+        .executable(name: "bridge-helper", targets: ["BridgeHelper"]),
     ],
     targets: [
         // libghostty, built from vendor/ghostty by scripts/build-ghostty.sh.
@@ -29,13 +30,21 @@ let package = Package(
             ]
         ),
 
-        // Plain Swift models: settings, color schemes, the split tree. No AppKit, no libghostty.
+        // Plain Swift models and logic: settings, projects, layouts, history, shell integration,
+        // sandbox policies, SSH commands. No AppKit, no libghostty; unit-tested.
         .target(name: "BridgeCore"),
+
+        // Talking to the rest of the system: the shells' socket, processes, the Keychain.
+        .target(name: "BridgeSystem", dependencies: ["BridgeCore"]),
 
         .executableTarget(
             name: "Bridge",
-            dependencies: ["BridgeCore", "BridgeTerm"]
+            dependencies: ["BridgeCore", "BridgeSystem", "BridgeTerm"]
         ),
+
+        // Bundled as Contents/Helpers/bridge-helper: messages from bash, SSH password prompts,
+        // and the guard that ends child processes when the app goes away.
+        .executableTarget(name: "BridgeHelper"),
 
         .testTarget(name: "BridgeCoreTests", dependencies: ["BridgeCore"]),
     ]

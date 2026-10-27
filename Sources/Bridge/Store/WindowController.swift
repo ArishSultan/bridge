@@ -14,7 +14,8 @@ final class WindowController {
     /// The New/Edit Terminal sheet.
     var terminalSheet: TerminalSheetRequest?
     var showProjectSheet = false
-    var showHistory = false
+    /// The command history sheet, for this pane.
+    var historyPane: ID?
     /// Switching away would stop these running terminals: asks Keep alive / Stop and switch.
     var pendingSwitch: (target: ID, stopping: [ID])?
     /// The item, pane or project being renamed inline.

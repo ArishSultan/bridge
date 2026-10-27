@@ -84,7 +84,8 @@ public enum TerminalConfig {
         add("window-inherit-working-directory", true)
         add("scrollback-limit", "\(scrollbackBytes(lines: settings.scrollbackLines))")
         add("clipboard-paste-protection", settings.pasteProtection)
-        add("shell-integration", settings.shellIntegration ? "detect" : "none")
+        // Bridge installs its own shell integration (see ShellIntegration).
+        add("shell-integration", "none")
         add("confirm-close-surface", true)
         add("mouse-reporting", settings.mouseReporting)
 
