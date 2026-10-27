@@ -3,6 +3,10 @@
 # build/dist/. Run scripts/bundle.sh first.
 #
 #   ./scripts/package.sh 0.2.0
+#
+# With a Developer ID signed app and these set, the app and the disk image are notarized by
+# Apple and the tickets stapled, so macOS opens them without warnings:
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD (an app-specific password for the Apple ID)
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -15,6 +19,23 @@ zip="$dist/Bridge-$version-macos-arm64.zip"
 [ -d "$app" ] || { echo "No $app; run scripts/bundle.sh first." >&2; exit 1; }
 rm -rf "$dist"
 mkdir -p "$dist"
+
+notarize=false
+if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_APP_PASSWORD:-}" ]; then
+    notarize=true
+fi
+submit() {
+    xcrun notarytool submit "$1" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+        --password "$APPLE_APP_PASSWORD" --wait --timeout 30m
+}
+
+if $notarize; then
+    # The app first, so the ticket stapled to it travels in the zip and the disk image.
+    ditto -c -k --keepParent "$app" "$dist/notarize.zip"
+    submit "$dist/notarize.zip"
+    rm "$dist/notarize.zip"
+    xcrun stapler staple "$app"
+fi
 
 # The zip keeps the bundle's signature and attributes.
 ditto -c -k --sequesterRsrc --keepParent "$app" "$zip"
@@ -32,6 +53,12 @@ for attempt in 1 2 3 4 5; do
     [ "$attempt" = 5 ] && exit 1
     sleep 5
 done
+
+if $notarize; then
+    codesign --force --timestamp --sign "$DEVELOPER_ID" "$dmg"
+    submit "$dmg"
+    xcrun stapler staple "$dmg"
+fi
 
 (cd "$dist" && shasum -a 256 ./*.dmg ./*.zip | sed 's| \./| |' > SHA256SUMS.txt)
 ls -l "$dist"

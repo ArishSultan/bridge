@@ -20,14 +20,15 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           submodules: true
+          persist-credentials: false
 
       - uses: ./.github/actions/libghostty
 
       - name: Build
-        run: swift build
+        run: swift build --force-resolved-versions
 
       - name: Test
         run: swift test

@@ -50,7 +50,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate()
         NSWindow.allowsAutomaticWindowTabbing = false
         // Start libghostty and load the projects before the first window draws.
-        MainActor.assumeIsolated { _ = Store.shared }
+        MainActor.assumeIsolated {
+            _ = Store.shared
+            _ = Updates.shared
+        }
         DispatchQueue.main.async {
             MainActor.assumeIsolated { Store.shared.reportLaunchProblems() }
         }
@@ -103,6 +106,12 @@ struct BridgeCommands: Commands {
     private var noTerminal: Bool { controller?.focusedSurface == nil }
 
     var body: some Commands {
+        if Updates.shared.available {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { Updates.shared.checkForUpdates() }
+            }
+        }
+
         CommandGroup(replacing: .newItem) {
             Button("Open Folder…") { store.showOpenPanel() }
                 .keyboardShortcut("o")

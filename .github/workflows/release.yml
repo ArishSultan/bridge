@@ -6,10 +6,18 @@
 # 2. Merging that pull request tags the commit (v<version>) and publishes a GitHub release with
 #    those notes.
 # 3. The build job then makes an Apple Silicon Bridge.app and attaches it to the release as a .dmg
-#    and a .zip, with SHA-256 sums.
+#    and a .zip, with SHA-256 sums, a signed build provenance attestation, and (with a Sparkle
+#    key) the appcast the app checks for updates.
 #
-# The app is ad-hoc signed, not notarized (no Apple Developer certificate), so the release notes
-# say how to open it the first time.
+# Signing and notarization happen when these repository secrets exist (otherwise the app is
+# ad-hoc signed and the release notes say how to open it the first time):
+#   DEVELOPER_ID_P12            a "Developer ID Application" certificate and key, as a base64 .p12
+#   DEVELOPER_ID_P12_PASSWORD   its password
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   for notarytool (an app-specific password)
+# Updates need SPARKLE_PRIVATE_KEY (from Sparkle's generate_keys -x) and the matching public key
+# as the SPARKLE_PUBLIC_KEY repository variable.
+#
+# Actions are pinned to commits (the tag is in the comment); Dependabot keeps them current.
 #
 # Run this workflow by hand with a tag to rebuild and re-attach the files of an existing release.
 name: Release
@@ -27,20 +35,21 @@ concurrency:
   group: release
   cancel-in-progress: false
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
 
 jobs:
   release-please:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     outputs:
       created: ${{ steps.release.outputs.release_created }}
       tag: ${{ steps.release.outputs.tag_name }}
     steps:
       - id: release
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
         with:
           # Pull requests opened with the default token don't start CI. Add a fine-grained token
           # (contents + pull requests: read and write) as RELEASE_PLEASE_TOKEN to get CI on them.
@@ -55,17 +64,28 @@ jobs:
       always() &&
       (needs.release-please.outputs.created == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: macos-26
-    timeout-minutes: 90
+    timeout-minutes: 120
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     env:
       TAG: ${{ needs.release-please.outputs.tag || inputs.tag }}
       GH_TOKEN: ${{ github.token }}
+      SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+      HAS_DEVELOPER_ID: ${{ secrets.DEVELOPER_ID_P12 != '' }}
+      HAS_SPARKLE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY != '' }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ env.TAG }}
           submodules: true
+          persist-credentials: false
 
+      # Always rebuilt for a release (never restored from a cache another workflow could fill).
       - uses: ./.github/actions/libghostty
+        with:
+          cache: false
 
       - name: Check the tag matches version.txt
         run: |
@@ -76,6 +96,25 @@ jobs:
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
+      - name: Import the Developer ID certificate
+        if: env.HAS_DEVELOPER_ID == 'true'
+        env:
+          P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(uuidgen)
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/id.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/id.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/id.p12"
+          identity=$(security find-identity -v -p codesigning "$keychain" | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "DEVELOPER_ID=$identity" >> "$GITHUB_ENV"
+
       - name: Build Bridge.app
         run: ./scripts/bundle.sh
 
@@ -84,8 +123,33 @@ jobs:
           lipo build/Bridge.app/Contents/MacOS/Bridge -verify_arch arm64
           codesign --verify --deep --strict build/Bridge.app
 
-      - name: Package
+      - name: Package (and notarize)
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: ./scripts/package.sh "$VERSION"
+
+      - name: Appcast for updates
+        if: env.HAS_SPARKLE_KEY == 'true'
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          mkdir -p build/appcast
+          cp build/dist/*.zip build/appcast/
+          printf '%s' "$SPARKLE_PRIVATE_KEY" | .build/artifacts/sparkle/Sparkle/bin/generate_appcast \
+            --ed-key-file - \
+            --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/" \
+            --link "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}" \
+            build/appcast
+          cp build/appcast/appcast.xml build/dist/appcast.xml
+
+      - name: Attest where the files came from
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.2.0
+        with:
+          subject-path: |
+            build/dist/*.dmg
+            build/dist/*.zip
 
       - name: Attach to the release
         run: gh release upload "$TAG" build/dist/* --clobber
@@ -94,23 +158,21 @@ jobs:
         run: |
           notes=$(gh release view "$TAG" --json body --jq .body)
           case "$notes" in *"<!-- install -->"*) exit 0 ;; esac
-          cat > install.md <<'NOTES'
-
-          <!-- install -->
-          ### Install
-
-          Download the `.dmg`, open it and drag **Bridge** to Applications. It runs on Apple Silicon
-          Macs (M1 or later) with macOS 15 or later.
-
-          Bridge isn't notarized by Apple, so macOS blocks it the first time you open it. Either run
-
-          ```sh
-          xattr -dr com.apple.quarantine /Applications/Bridge.app
-          ```
-
-          or try to open it once, then click **Open Anyway** in System Settings → Privacy & Security.
-
-          Check the download against `SHA256SUMS.txt` with `shasum -a 256 -c --ignore-missing SHA256SUMS.txt`.
-          NOTES
+          {
+            echo
+            echo "<!-- install -->"
+            echo "### Install"
+            echo
+            echo "Download the \`.dmg\`, open it and drag **Bridge** to Applications. It runs on Apple Silicon"
+            echo "Macs (M1 or later) with macOS 15 or later."
+            echo
+            if [ "$HAS_DEVELOPER_ID" != "true" ]; then
+              echo "This build isn't notarized by Apple, so macOS blocks it the first time you open it. Try to"
+              echo "open it once, then click **Open Anyway** in System Settings → Privacy & Security."
+              echo
+            fi
+            echo "Check where a download came from with \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`,"
+            echo "or its checksum with \`shasum -a 256 -c --ignore-missing SHA256SUMS.txt\`."
+          } > install.md
           printf '%s\n' "$notes" | cat - install.md > notes.md
           gh release edit "$TAG" --notes-file notes.md

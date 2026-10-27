@@ -3,6 +3,11 @@
 name: libghostty
 description: Build or restore vendor/GhosttyKit.xcframework and vendor/share
 
+inputs:
+  cache:
+    description: Restore a cached build when one matches (off for releases, which always build)
+    default: "true"
+
 runs:
   using: composite
   steps:
@@ -16,7 +21,8 @@ runs:
 
     - name: Restore
       id: cache
-      uses: actions/cache@v4
+      if: inputs.cache == 'true'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: |
           vendor/GhosttyKit.xcframework
@@ -25,7 +31,7 @@ runs:
 
     - name: Install Zig
       if: steps.cache.outputs.cache-hit != 'true'
-      uses: mlugg/setup-zig@v2
+      uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
       with:
         version: 0.15.2
 
