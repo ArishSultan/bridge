@@ -6,24 +6,31 @@ This is **Bridge v2**, rewritten from scratch in Swift. SwiftUI and AppKit draw 
 [libghostty](https://github.com/ghostty-org/ghostty) (the core of the Ghostty terminal) runs every
 terminal. v1 (Rust, gpui) lives on the `main` branch.
 
-## Status
+## What's in it
 
-The first milestone is the terminal itself:
+Everything v1 did, on native macOS components:
 
-- Terminals rendered on the GPU by libghostty's Metal renderer. Each terminal has its own pty,
-  I/O thread and renderer thread, synced to the display, so one flooding output (`yes`,
-  `cat huge.log`) doesn't slow the others or the UI.
-- Tabs and splits, with draggable dividers (double-click one to even it out) and zoom.
-- The nine color schemes from v1, with the window chrome matched to the scheme.
-- Settings applied live to every open terminal, saved to the same `~/.config/bridge/settings.json`
-  as v1. Settings v2 doesn't use yet are kept in the file untouched.
-- Shell integration (zsh, bash, fish, elvish) reports the working directory, which titles the
-  tab and is where new tabs and splits start.
-- Input methods (Japanese, Korean, Chinese), Option as Meta, clipboard prompts for pastes that could
-  run commands.
+- **Terminals** rendered on the GPU by libghostty's Metal renderer, each with its own pty, I/O
+  thread and renderer thread, so one flooding output doesn't slow the others or the UI.
+- **Projects** (folders) in windows of their own, with terminals and views (split layouts) in
+  the sidebar; panes rearranged by dragging their headers; shells, tasks (start, stop, restart,
+  restart on exit) and SSH sessions; keep-alive; the git branch menu with worktrees; the Global
+  and Welcome windows; windows reopened at launch. Uses v1's `projects.json`.
+- **Sandboxed terminals**: macOS's sandbox (Seatbelt) with v1's policies, or Docker; profiles
+  edited in the Global window; New Claude Terminal (⌘⌥C).
+- **SSH hosts and port forwards** in the Global window: the system ssh, saved passwords in the
+  Keychain, forwards supervised with reconnects and logs.
+- **Vaultwarden**: unlock your own server and its SSH keys go into a private ssh-agent, in memory
+  only, until it locks.
+- **Shell integration** for zsh and bash (v1's prompt styles and Starship), command history
+  (⌃R), attention for the bell, long commands and finished tasks, with notifications and the
+  Dock badge.
+- **Suggestions and completions** in zsh: gray history suggestions (→ accepts) and a completion
+  menu at the cursor (Tab).
+- v1's settings, color schemes and deep dark look. Settings, projects, profiles and history
+  are the same files v1 uses, in `~/.config/bridge/`.
 
-Still to port from v1: projects and the Global and Welcome windows, SSH hosts and port forwards,
-Vaultwarden, sandboxed terminals, and command history and completions.
+Requires macOS 26 on Apple Silicon.
 
 ## Building
 
@@ -45,27 +52,30 @@ build folder.
 
 | Path | What |
 |---|---|
-| `Sources/BridgeCore` | Plain Swift models: settings, color schemes, the split tree, and the mapping from settings to libghostty's config. Tested. |
+| `Sources/BridgeCore` | Plain Swift logic, unit-tested: settings, projects and layouts, history, completions, shell integration scripts, sandbox policies, SSH commands, profiles. |
+| `Sources/BridgeSystem` | Talking to the system: the shells' socket, the Keychain, Vaultwarden (client, crypto, ssh-agent). |
 | `Sources/BridgeTerm` | The only code that calls libghostty's C API: the app with its callbacks, and `TerminalSurfaceView`, the AppKit view a terminal renders into. |
-| `Sources/Bridge` | The SwiftUI app: windows, tabs, split layout, settings. |
+| `Sources/Bridge` | The SwiftUI app: windows, sidebar, panes, sheets, settings, port forwards. |
+| `Sources/BridgeHelper` | `bridge-helper`, bundled in the app: messages from bash, SSH password prompts, and the guard that ends child processes with the app. |
+| `Sources/CArgon2` | The Argon2 reference implementation, for Vaultwarden. |
 | `vendor/ghostty` | Ghostty, pinned to a release as a submodule. |
 | `patches/ghostty` | Fixes from newer Ghostty the pinned release needs, applied by the build script. |
 
 ## Shortcuts
 
-Ghostty's macOS key bindings:
-
 | Keys | What |
 |---|---|
-| ⌘N / ⌘T | New window / tab (in the current terminal's folder) |
-| ⌘D / ⌘⇧D | Split right / down |
-| ⌘W | Close the terminal (the tab and window close with their last one) |
-| ⌘[ / ⌘] | Previous / next split |
-| ⌘⌥ Arrow | Split in that direction |
-| ⌘⇧↩ | Zoom the split in or out |
-| ⌘⌃= | Even out splits |
-| ⌘1 … ⌘9, ⌘⇧[ / ⌘⇧] | Go to a tab |
-| ⌘+ / ⌘- / ⌘0 | Font size |
+| ⌘T / ⌘⇧T | New terminal (sandboxed / open) |
+| ⌘⇧E / ⌘⌥C | New task / New Claude terminal |
+| ⌘O / ⌘⇧G | Open a folder as a project / the Global window |
+| ⌘D / ⌘⇧D | Add a terminal to the right / below (makes a view) |
+| ⌘W / ⌘⇧W | Close a terminal of a view / the window |
+| ⌘] / ⌘[ | Next / previous terminal of a view |
+| ⌃Tab, ⌘⇧] / ⌘⇧[ | Next / previous item |
+| ⌘1 … ⌘9 | Go to an item |
+| ⌘B | Show or hide the sidebar |
+| ⌃R | Command history |
+| ⌘+ / ⌘- / ⌘0, ⌘K | Font size, clear |
 | ⌘, | Settings |
 
 ## Releases

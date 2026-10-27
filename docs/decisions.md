@@ -33,6 +33,28 @@ defaults; the actions they produce (split, new tab, move focus) are handled by t
 **Same settings file.** v2 reads and writes v1's `settings.json` with the same keys, and keeps keys
 it doesn't use yet, so going back and forth between versions loses nothing.
 
+**Native chrome, v1's colors.** Windows, the sidebar, toolbar, sheets and menus are SwiftUI's
+own components, tinted with v1's theme: the terminal's background, and one surface a step toward
+its foreground for everything else. "Match app" is v1's near-black, not a named scheme.
+
+**Bridge's own shell integration, over a socket.** libghostty owns the pty, so v1's private
+escape codes can't reach the app. The scripts emit standard OSC 133 and OSC 7 for libghostty and
+send commands and prompts to the app over a unix socket (zsh's `zsocket`; bash through
+`bridge-helper`). They live in `shell-v2/`, so v1 and v2 never overwrite each other's scripts.
+
+**Suggestions drawn by zsh.** v1 read the command line off the screen and painted suggestions
+over it. In v2 zsh sends its line and draws the app's suggestion itself (`POSTDISPLAY`), so it
+always lines up; bash gets history and ⌃R but no inline suggestions.
+
+**Passwords through the app, not the helper.** The helper is its own (ad-hoc signed) binary, so
+it can't read the app's Keychain items without a prompt. ssh's askpass asks the app instead,
+with a nonce given only to that ssh: programs in other terminals (sandboxed ones included) can
+reach the socket but can't ask for passwords.
+
+**A sandbox fix carried over from v1.** Seatbelt lets a more specific operation win over a
+wildcard whatever the order, so `deny file-read*` didn't hide a path inside a folder allowed by
+`allow file-read-data`. Hidden paths now deny `file-read-data` by name.
+
 ## v1
 
 ## The product
