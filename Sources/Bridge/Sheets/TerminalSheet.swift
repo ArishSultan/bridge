@@ -82,6 +82,10 @@ struct TerminalSheet: View {
                         if !global {
                             Picker("Isolation", selection: $isolation) {
                                 Text("Project sandbox (writes only inside the project)").tag(IsolationChoice.project)
+                                ForEach(store.profiles.sandboxes) { profile in
+                                    Text("\(profile.name) sandbox\(profile.engine.isDocker ? " (Docker)" : "")")
+                                        .tag(IsolationChoice.profile(profile.id))
+                                }
                                 Text("Open — not sandboxed").tag(IsolationChoice.open)
                             }
                             .pickerStyle(.radioGroup)

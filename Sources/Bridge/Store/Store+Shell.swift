@@ -87,3 +87,33 @@ extension Store {
         surface.window?.makeFirstResponder(surface)
     }
 }
+
+// MARK: - Sandbox
+
+extension Store {
+    /// Where sandbox policies are written for `sandbox-exec -f`.
+    static var policyDirectory: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("bridge-sandbox", isDirectory: true)
+    }
+
+    /// What sandboxed shells must be able to read beyond their profile: the integration scripts,
+    /// libghostty's terminfo and shell files, and the helper program.
+    static var sandboxReadable: [URL] {
+        var urls = [ShellIntegration.directory, Bundle.main.bundleURL]
+        if let resources = ProcessInfo.processInfo.environment["GHOSTTY_RESOURCES_DIR"] {
+            urls.append(URL(fileURLWithPath: resources).deletingLastPathComponent())
+        }
+        if let helper = helperPath { urls.append(URL(fileURLWithPath: helper)) }
+        return urls
+    }
+
+    /// A new Claude terminal: a task running `claude` in the Claude sandbox (made from the
+    /// Project sandbox the first time), started right away.
+    func newClaudeTerminal(in projectID: ID) {
+        let sandbox = profiles.claudeSandbox()
+        addItem(projectID, spec: TerminalSpec(
+            name: "Claude",
+            kind: .task(command: "claude", autoStart: true, restartOnExit: false),
+            isolation: isGlobal(projectID) ? .open : .sandboxed(profile: sandbox)))
+    }
+}

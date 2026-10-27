@@ -23,6 +23,14 @@ final class Store {
         didSet { scheduleSave() }
     }
 
+    /// SSH hosts and forwards, sandbox profiles, the Vaultwarden account.
+    var profiles: Profiles {
+        didSet {
+            guard profiles != oldValue else { return }
+            do { try profiles.save() } catch { NSLog("Bridge: could not save profiles: %@", "\(error)") }
+        }
+    }
+
     /// Whether "match app" schemes are currently dark.
     private(set) var isDark: Bool
     private(set) var startupError: String?
@@ -58,6 +66,7 @@ final class Store {
         settings.sanitize()
         self.settings = settings
         projects = Projects.load()
+        profiles = Profiles.load()
         isDark = Self.computeDark(settings.appTheme)
         applyAppTheme()
 
@@ -478,6 +487,24 @@ final class Store {
                 socket: shellServer.path, token: token, helper: Self.helperPath)
             plan.command = integration.command ?? plan.command
             plan.environment.merge(integration.variables) { _, new in new }
+        }
+        // Sandboxed terminals (never in the Global window, never SSH).
+        if case .sandboxed(let profile) = spec.effectiveIsolation, !isGlobal(projectID) {
+            let engine = profiles.engine(for: profile)
+            let policyFile = Self.policyDirectory.appendingPathComponent("pane-\(pane).sb")
+            let wrapped = Launch.sandboxed(
+                plan, engine: engine, spec: spec, pane: pane, project: project, settings: settings,
+                policyFile: policyFile, extraReadable: Self.sandboxReadable)
+            if let policy = wrapped.policy {
+                do {
+                    try FileManager.default.createDirectory(at: Self.policyDirectory, withIntermediateDirectories: true)
+                    try policy.write(to: policyFile, atomically: true, encoding: .utf8)
+                } catch {
+                    plan = Launch.failure("Could not write the sandbox policy: \(error.localizedDescription)", folder: plan.folder)
+                }
+            }
+            if wrapped.policy != nil || engine.isDocker { plan = wrapped.plan }
+            session.dockerContainer = engine.isDocker ? Sandbox.containerName(pane) : nil
         }
         let options = TerminalSurfaceView.Options(
             workingDirectory: plan.folder.path,

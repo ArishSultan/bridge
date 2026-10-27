@@ -98,6 +98,11 @@ struct BridgeCommands: Commands {
             Button("New Task") { controller?.newTerminal(.task) }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
                 .disabled(controller == nil)
+            Button("New Claude Terminal") {
+                if let controller { store.newClaudeTerminal(in: controller.projectID) }
+            }
+            .keyboardShortcut("c", modifiers: [.command, .option])
+            .disabled(controller == nil)
             Divider()
             Button("Split Right") { controller?.split(.horizontal) }
                 .keyboardShortcut("d")

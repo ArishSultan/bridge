@@ -45,6 +45,8 @@ final class PaneSession: Identifiable {
     @ObservationIgnored var path: String?
     /// The shell's folder, as last reported.
     @ObservationIgnored var shellDirectory: String?
+    /// The Docker container this pane runs in, removed when it stops.
+    @ObservationIgnored var dockerContainer: String?
 
     init(id: ID, projectID: ID) {
         self.id = id
@@ -62,6 +64,16 @@ final class PaneSession: Identifiable {
     /// End the program and drop the surface.
     func detach(status: Status) {
         restartTask?.cancel()
+        if let container = dockerContainer {
+            // Closing the terminal leaves the container running otherwise.
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["docker", "rm", "-f", container]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try? process.run()
+            dockerContainer = nil
+        }
         atPrompt = false
         running = nil
         surface?.onChange = nil

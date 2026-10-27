@@ -22,6 +22,14 @@ final class WindowController {
     var renaming: RenameTarget?
     var confirmDeleteItem: ID?
     var confirmRemoveProject = false
+    /// The sandbox profile being edited: nil none, `.project` the built-in one.
+    var sandboxSheet: SandboxTarget?
+
+    struct SandboxTarget: Identifiable {
+        /// nil: the Project sandbox; 0: a new profile.
+        let profile: ID?
+        var id: String { profile.map(String.init) ?? "project" }
+    }
     var toast: String?
 
     enum RenameTarget: Equatable {

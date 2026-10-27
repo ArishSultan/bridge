@@ -49,6 +49,9 @@ struct ProjectWindow: View {
         .sheet(item: historyTarget) { target in
             HistorySheet(pane: target.id)
         }
+        .sheet(item: $controller.sandboxSheet) { target in
+            SandboxSheet(profileID: target.profile)
+        }
         .confirmationDialog(
             switchTitle, isPresented: pendingSwitchShown, titleVisibility: .visible
         ) {

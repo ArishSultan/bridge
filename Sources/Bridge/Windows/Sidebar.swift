@@ -17,6 +17,9 @@ struct Sidebar: View {
                 }
                 .onMove { store.moveItems(project.id, fromOffsets: $0, toOffset: $1) }
             }
+            if controller.isGlobal {
+                GlobalSections(controller: controller)
+            }
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom) {
@@ -28,6 +31,12 @@ struct Sidebar: View {
                         .frame(maxWidth: .infinity)
                 }
                 .help(controller.isGlobal ? "New terminal (⌘T)" : "New sandboxed terminal (⌘T)")
+                Button {
+                    store.newClaudeTerminal(in: project.id)
+                } label: {
+                    Image(systemName: "sparkles")
+                }
+                .help("New Claude terminal (⌘⌥C)")
             }
             .controlSize(.large)
             .buttonStyle(.bordered)

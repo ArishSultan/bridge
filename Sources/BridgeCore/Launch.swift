@@ -37,6 +37,44 @@ public enum Launch {
         }
     }
 
+    /// Wrap a plan in a terminal's sandbox. Returns the new plan and, for Seatbelt, the policy
+    /// text to write to `policyFile` (the command reads it from there).
+    public static func sandboxed(
+        _ plan: LaunchPlan, engine: SandboxEngine, spec: TerminalSpec, pane: ID, project: Project,
+        settings: Settings, policyFile: URL, extraReadable: [URL]
+    ) -> (plan: LaunchPlan, policy: String?) {
+        var plan = plan
+        switch engine {
+        case .seatbelt(let seatbelt):
+            let history = Settings.configDirectory
+                .appendingPathComponent("sandbox-history/project-\(project.id).history")
+            try? FileManager.default.createDirectory(at: history.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if !spec.kind.isTask {
+                // The shell keeps its own history (the user's isn't readable in the sandbox), and
+                // the project folder stands in for ~.
+                plan.environment["BRIDGE_HISTFILE"] = history.path
+                if settings.projectIsHome { plan.environment["BRIDGE_PROJECT_ROOT"] = project.root.path }
+            }
+            let policy = Sandbox.policy(seatbelt, context: Sandbox.Context(
+                root: project.root, extraWritable: [history], extraReadable: extraReadable))
+            let inner = plan.command ?? "\(quote(loginShell(settings))) -l"
+            // The ssh-agent socket would hand out the user's keys.
+            plan.command = "/usr/bin/env -u SSH_AUTH_SOCK /usr/bin/sandbox-exec -f \(quote(policyFile.path)) \(inner)"
+            return (plan, policy)
+        case .docker(let docker):
+            let root = project.root.standardizedFileURL.path
+            let folder = plan.folder.standardizedFileURL.path
+            let inside = folder.hasPrefix(root + "/") ? String(folder.dropFirst(root.count + 1)) : ""
+            var command: String?
+            if case .task(let task, _, _) = spec.kind { command = task }
+            let args = Sandbox.dockerArguments(docker, pane: pane, root: project.root, inside: inside, command: command)
+            plan.command = (["docker"] + args).map(quote).joined(separator: " ")
+            // Shell integration doesn't reach into the container.
+            plan.environment = [:]
+            return (plan, nil)
+        }
+    }
+
     /// A plan that only prints `message` and exits with a failure.
     public static func failure(_ message: String, folder: URL) -> LaunchPlan {
         LaunchPlan(folder: folder, command: "/bin/sh -c \(quote("echo \(quote(message)); exit 1"))")
