@@ -72,6 +72,8 @@ final class Store {
     @ObservationIgnored private var tokens: [String: ID] = [:]
     /// Single-use nonces for ssh askpass requests, with their host.
     @ObservationIgnored var askpassNonces: [String: ID] = [:]
+    /// Executable names per PATH, for completing command names.
+    @ObservationIgnored var executableCache: [String: [String]] = [:]
     var shellSocketPath: String? { shellServer?.path }
 
     private init() {
@@ -576,6 +578,8 @@ final class Store {
 
     /// Keys for a terminal whose program has exited: Enter starts it again, others are ignored.
     private func intercept(_ event: NSEvent, session: PaneSession) -> Bool {
+        // The completion menu takes its keys while open.
+        if CompletionMenu.shared.session === session, CompletionMenu.shared.handle(event) { return true }
         // ⌃R at a prompt: command history. Inside a program, ⌃R is the program's.
         if session.atPrompt, event.modifierFlags.intersection([.control, .command, .option, .shift]) == .control,
            event.charactersIgnoringModifiers == "r", let controller = controllers[session.projectID] {

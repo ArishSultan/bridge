@@ -50,6 +50,8 @@ final class PaneSession: Identifiable {
     /// Reconnecting an SSH session that dropped.
     @ObservationIgnored var reconnectAttempts = 0
     @ObservationIgnored var lastReconnect: Date?
+    /// A folder was just completed: offer what's inside once the shell shows it.
+    @ObservationIgnored var reopenMenu = false
 
     init(id: ID, projectID: ID) {
         self.id = id

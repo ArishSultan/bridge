@@ -36,6 +36,12 @@ extension Store {
             // bash: the command that ran (without its start time), reported at the next prompt.
             session.running = (fields[2], fields[3], Date())
             finishCommand(session, exitCode: Int(fields[1]), cwd: fields[3], path: fields[4], timed: false)
+        case "suggest" where fields.count >= 4:
+            return suggestion(for: session, line: fields[1], cwd: fields[2], path: fields[3])
+        case "complete" where fields.count >= 4:
+            return complete(for: session, line: fields[1], cwd: fields[2], path: fields[3])
+        case "line" where fields.count >= 4:
+            lineChanged(for: session, line: fields[1], cwd: fields[2], path: fields[3])
         case "closed":
             session.atPrompt = false
         default:
