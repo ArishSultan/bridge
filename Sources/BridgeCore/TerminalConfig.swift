@@ -86,9 +86,25 @@ public enum TerminalConfig {
         add("clipboard-paste-protection", settings.pasteProtection)
         add("shell-integration", settings.shellIntegration ? "detect" : "none")
         add("confirm-close-surface", true)
+        add("mouse-reporting", settings.mouseReporting)
+
+        // The app's menus own these shortcuts (new terminal, splits, items, windows); without a
+        // Ghostty binding the key goes on to the menu. Ghostty keeps copy and paste, font size,
+        // clearing, scrolling and text editing keys.
+        for trigger in appShortcuts {
+            add("keybind", "\(trigger)=unbind")
+        }
 
         return entries
     }
+
+    /// Ghostty's default bindings for keys the app's menus handle.
+    static let appShortcuts: [String] = [
+        "super+t", "super+shift+t", "super+n", "super+shift+n", "super+o",
+        "super+d", "super+shift+d", "super+w", "super+shift+w", "super+alt+w",
+        "super+[", "super+]", "super+shift+[", "super+shift+]",
+        "ctrl+tab", "ctrl+shift+tab", "super+b", "super+shift+g", "super+shift+e", "super+alt+c",
+    ] + (1...9).map { "super+\($0)" }
 
     /// The entries as the text of a Ghostty config file.
     public static func fileContents(for settings: Settings, dark: Bool) -> String {

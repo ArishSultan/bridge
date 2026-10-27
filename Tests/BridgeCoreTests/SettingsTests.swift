@@ -18,7 +18,7 @@ struct SettingsTests {
           "cursor_shape": "hollow",
           "option_as_alt": true,
           "prompt_style": "starship",
-          "autosuggestions": false
+          "some_future_key": [1, 2]
         }
         """
         let settings = try JSONDecoder().decode(Settings.self, from: Data(v1.utf8))
@@ -28,13 +28,13 @@ struct SettingsTests {
         #expect(settings.fontSize == 15)
         #expect(settings.cursorShape == .hollow)
         #expect(settings.optionAsAlt)
-        #expect(settings.extra["prompt_style"] == .string("starship"))
-        #expect(settings.extra["autosuggestions"] == .bool(false))
+        #expect(settings.promptStyle == .starship)
+        #expect(settings.extra["some_future_key"] == .array([.number(1), .number(2)]))
 
         let saved = try JSONEncoder().encode(settings)
         let object = try #require(JSONSerialization.jsonObject(with: saved) as? [String: Any])
         #expect(object["prompt_style"] as? String == "starship")
-        #expect(object["autosuggestions"] as? Bool == false)
+        #expect(object["some_future_key"] as? [Int] == [1, 2])
         #expect(object["font_family"] as? String == "JetBrains Mono")
     }
 

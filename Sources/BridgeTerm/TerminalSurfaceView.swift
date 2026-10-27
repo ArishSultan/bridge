@@ -15,14 +15,24 @@ public final class TerminalSurfaceView: NSView {
     /// What a new terminal starts with.
     public struct Options: Sendable {
         public var workingDirectory: String?
+        /// A shell command line (run with `/bin/sh -c`); nil runs the login shell.
         public var command: String?
+        /// Added to the program's environment.
+        public var environment: [String: String]
         /// Points; nil uses the configured size.
         public var fontSize: Float?
+        /// Keep the terminal (and its output) when the program exits, instead of closing it.
+        public var waitAfterCommand: Bool
 
-        public init(workingDirectory: String? = nil, command: String? = nil, fontSize: Float? = nil) {
+        public init(
+            workingDirectory: String? = nil, command: String? = nil, environment: [String: String] = [:],
+            fontSize: Float? = nil, waitAfterCommand: Bool = false
+        ) {
             self.workingDirectory = workingDirectory
             self.command = command
+            self.environment = environment
             self.fontSize = fontSize
+            self.waitAfterCommand = waitAfterCommand
         }
     }
 
@@ -55,6 +65,9 @@ public final class TerminalSurfaceView: NSView {
     public var onChange: (() -> Void)?
     /// Called when this terminal gains keyboard focus.
     public var onFocus: (() -> Void)?
+    /// Sees every key press first; returning true keeps it from the terminal. The app uses it for
+    /// Enter on an exited program, ⌃R, and the completion menu.
+    public var interceptKey: ((NSEvent) -> Bool)?
 
     private var cursor: NSCursor = .iBeam
     private var cellSize: CGSize = .zero
@@ -78,12 +91,26 @@ public final class TerminalSurfaceView: NSView {
         config.font_size = options.fontSize ?? 0
         config.context = context.ghostty
 
+        config.wait_after_command = options.waitAfterCommand
+
         // The C strings only need to live for the duration of ghostty_surface_new.
+        var cStrings: [UnsafeMutablePointer<CChar>] = []
+        defer { cStrings.forEach { free($0) } }
+        var environment = options.environment.sorted { $0.key < $1.key }.map { key, value in
+            let pair = ghostty_env_var_s(key: strdup(key), value: strdup(value))
+            cStrings.append(UnsafeMutablePointer(mutating: pair.key))
+            cStrings.append(UnsafeMutablePointer(mutating: pair.value))
+            return pair
+        }
         let surface = options.workingDirectory.withOptionalCString { directory in
             options.command.withOptionalCString { command in
-                config.working_directory = directory
-                config.command = command
-                return ghostty_surface_new(app.app, &config)
+                environment.withUnsafeMutableBufferPointer { env in
+                    config.working_directory = directory
+                    config.command = command
+                    config.env_vars = env.baseAddress
+                    config.env_var_count = env.count
+                    return ghostty_surface_new(app.app, &config)
+                }
             }
         }
         guard let surface else { throw TerminalError.surfaceFailed }
@@ -127,6 +154,36 @@ public final class TerminalSurfaceView: NSView {
     public func requestClose() {
         guard let surface else { return }
         ghostty_surface_request_close(surface)
+    }
+
+    /// Send text to the program as if pasted (bracketed when the program asked for that).
+    public func sendText(_ text: String) {
+        guard let surface, !text.isEmpty else { return }
+        text.withCString { ghostty_surface_text(surface, $0, UInt(text.utf8.count)) }
+    }
+
+    /// Send text to the program as typed keys (control characters included, never bracketed).
+    public func typeText(_ text: String) {
+        guard !text.isEmpty else { return }
+        // Ghostty's `text:` action writes the bytes as they are; its argument takes Zig string
+        // escapes, so escape backslashes and anything outside printable ASCII.
+        var escaped = ""
+        for byte in text.utf8 {
+            switch byte {
+            case UInt8(ascii: "\\"): escaped += "\\\\"
+            case 0x20..<0x7f: escaped.append(Character(UnicodeScalar(byte)))
+            default: escaped += String(format: "\\x%02x", byte)
+            }
+        }
+        perform(binding: "text:" + escaped)
+    }
+
+    /// Where the cursor is, in this view's coordinates (for anchoring popovers).
+    public var cursorRect: NSRect {
+        guard let surface else { return .zero }
+        var x = 0.0, y = 0.0, width = 0.0, height = 0.0
+        ghostty_surface_ime_point(surface, &x, &y, &width, &height)
+        return NSRect(x: x, y: bounds.height - y, width: max(width, 1), height: max(height, Double(cellSize.height)))
     }
 
     /// Run a Ghostty key binding action by name, like `copy_to_clipboard` or `increase_font_size:1`.
@@ -392,6 +449,7 @@ public final class TerminalSurfaceView: NSView {
     // MARK: - Keyboard
 
     public override func keyDown(with event: NSEvent) {
+        if interceptKey?(event) == true { return }
         guard let surface else {
             interpretKeyEvents([event])
             return
@@ -496,6 +554,7 @@ public final class TerminalSurfaceView: NSView {
     /// ⌘T, ⌘C…) are handled now; other ⌃ combinations go on to keyDown so the program gets them.
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard event.type == .keyDown, focused, let surface else { return false }
+        if event.modifierFlags.contains(.control), interceptKey?(event) == true { return true }
 
         var flags = ghostty_binding_flags_e(0)
         var keyEvent = event.terminalKeyEvent(GHOSTTY_ACTION_PRESS)
