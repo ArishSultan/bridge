@@ -3,6 +3,13 @@
 # Copy it to /Applications to launch it from Spotlight, Launchpad or the Dock.
 # Run scripts/build-ghostty.sh first (once, and after updating vendor/ghostty).
 # Builds for Apple Silicon (run it on an Apple Silicon Mac).
+#
+# Optional, for releases:
+#   DEVELOPER_ID        a "Developer ID Application: …" identity in the keychain: the app is
+#                       signed with it and the hardened runtime, ready to notarize
+#                       (scripts/package.sh notarizes). Without it the app is ad-hoc signed.
+#   SPARKLE_PUBLIC_KEY  the EdDSA public key updates are signed with (Sparkle's generate_keys).
+#                       Without it the app doesn't look for updates.
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -11,13 +18,17 @@ version=$(cat version.txt)
 
 [ -d vendor/GhosttyKit.xcframework ] || { echo "No libghostty; run scripts/build-ghostty.sh first." >&2; exit 1; }
 
-swift build -c release --arch arm64
+# Exactly the dependency versions in Package.resolved.
+swift build -c release --arch arm64 --force-resolved-versions
 bin=$(swift build -c release --arch arm64 --show-bin-path)
 
 app="build/$name.app"
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Helpers"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Helpers" "$app/Contents/Frameworks"
 cp "$bin/Bridge" "$app/Contents/MacOS/Bridge"
+# Sparkle, for updates.
+ditto "$bin/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
+install_name_tool -add_rpath @executable_path/../Frameworks "$app/Contents/MacOS/Bridge"
 # Messages from bash, SSH password prompts, and the guard around child processes.
 cp "$bin/bridge-helper" "$app/Contents/Helpers/bridge-helper"
 
@@ -53,16 +64,35 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>CFBundleVersion</key>
     <string>$version</string>
     <key>LSMinimumSystemVersion</key>
-    <string>26.0</string>
+    <string>15.0</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>SUFeedURL</key>
+    <string>https://github.com/ArishSultan/bridge/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>${SPARKLE_PUBLIC_KEY:-}</string>
 </dict>
 </plist>
 PLIST
 
-# An ad-hoc signature, so macOS treats each build as the same app.
-codesign --force --sign - "$app/Contents/Helpers/bridge-helper"
-codesign --force --sign - "$app"
+# Signed inside out: Sparkle's helpers, Sparkle, the helper, then the app. With a Developer ID
+# the hardened runtime is on (no injected libraries, no debugger) and a secure timestamp is
+# added, as notarization requires. Otherwise an ad-hoc signature, so macOS treats each build as
+# the same app.
+if [ -n "${DEVELOPER_ID:-}" ]; then
+    sign() { codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID" "$@"; }
+else
+    sign() { codesign --force --sign - "$@"; }
+fi
+sparkle="$app/Contents/Frameworks/Sparkle.framework/Versions/B"
+sign "$sparkle/XPCServices/Installer.xpc"
+sign --preserve-metadata=entitlements "$sparkle/XPCServices/Downloader.xpc"
+sign "$sparkle/Autoupdate"
+sign "$sparkle/Updater.app"
+sign "$app/Contents/Frameworks/Sparkle.framework"
+sign "$app/Contents/Helpers/bridge-helper"
+sign "$app"
+codesign --verify --deep --strict "$app"
 echo "Built $app"

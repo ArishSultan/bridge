@@ -3,10 +3,14 @@ import PackageDescription
 
 let package = Package(
     name: "Bridge",
-    platforms: [.macOS(.v26)],
+    platforms: [.macOS(.v15)],
     products: [
         .executable(name: "Bridge", targets: ["Bridge"]),
         .executable(name: "bridge-helper", targets: ["BridgeHelper"]),
+    ],
+    dependencies: [
+        // Updates for copies downloaded from GitHub releases (signed appcast, EdDSA-signed updates).
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.10.0"),
     ],
     targets: [
         // libghostty, built from vendor/ghostty by scripts/build-ghostty.sh.
@@ -47,7 +51,7 @@ let package = Package(
 
         .executableTarget(
             name: "Bridge",
-            dependencies: ["BridgeCore", "BridgeSystem", "BridgeTerm"]
+            dependencies: ["BridgeCore", "BridgeSystem", "BridgeTerm", .product(name: "Sparkle", package: "Sparkle")]
         ),
 
         // Bundled as Contents/Helpers/bridge-helper: messages from bash, SSH password prompts,

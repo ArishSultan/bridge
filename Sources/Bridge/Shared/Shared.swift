@@ -197,3 +197,15 @@ final class FrameObserver {
         for token in tokens { NotificationCenter.default.removeObserver(token) }
     }
 }
+
+extension View {
+    /// A floating control's background: Liquid Glass on macOS 26 and later, a material before.
+    @ViewBuilder
+    func floatingBackground<S: Shape>(in shape: S) -> some View {
+        if #available(macOS 26, *) {
+            glassEffect(in: shape)
+        } else {
+            background(.regularMaterial, in: shape)
+        }
+    }
+}

@@ -57,7 +57,7 @@ struct ProjectWindow: View {
                 Text(toast)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
-                    .glassEffect(in: Capsule())
+                    .floatingBackground(in: Capsule())
                     .padding(20)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                     .task {

@@ -128,7 +128,7 @@ struct DenialBadge: View {
         .buttonStyle(.borderless)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .glassEffect(in: Capsule())
+        .floatingBackground(in: Capsule())
         .padding(8)
         .help("The sandbox refused something in this terminal")
         .accessibilityLabel("Sandbox blocked \(session.denials.count) actions")

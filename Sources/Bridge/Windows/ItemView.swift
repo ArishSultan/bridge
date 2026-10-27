@@ -396,7 +396,7 @@ struct PaneContainer: View {
                     .truncationMode(.middle)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .glassEffect(in: Capsule())
+                    .floatingBackground(in: Capsule())
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .allowsHitTesting(false)
@@ -442,7 +442,7 @@ private struct FindBar: View {
         .buttonStyle(.borderless)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .glassEffect(in: Capsule())
+        .floatingBackground(in: Capsule())
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .trailing)
         .onAppear {
@@ -493,7 +493,7 @@ private struct ExitedBar: View {
         .font(.callout)
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .glassEffect(in: Capsule())
+        .floatingBackground(in: Capsule())
         .padding(12)
     }
 
