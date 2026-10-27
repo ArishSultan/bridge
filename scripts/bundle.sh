@@ -74,6 +74,17 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>dev.arish.bridge.pane</string>
+            <key>UTTypeDescription</key>
+            <string>Bridge terminal</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.data</string></array>
+        </dict>
+    </array>
     <key>SUFeedURL</key>
     <string>https://github.com/ArishSultan/bridge/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key>

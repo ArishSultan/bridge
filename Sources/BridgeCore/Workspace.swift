@@ -163,6 +163,16 @@ public indirect enum Layout: Equatable, Sendable {
         return true
     }
 
+    /// Put a terminal from elsewhere (another item) next to `target`, on its `side`.
+    @discardableResult
+    public mutating func insert(_ pane: ID, terminal spec: TerminalSpec, nextTo target: ID, side: Side, splitID: ID) -> Bool {
+        guard terminal(pane) == nil, split(target, axis: side.axis, newPane: pane, splitID: splitID, terminal: spec) else {
+            return false
+        }
+        if side.before { flip(splitID) }
+        return true
+    }
+
     private mutating func flip(_ splitID: ID) {
         guard case .split(let id, let axis, let ratio, var first, var second) = self else { return }
         if id == splitID {

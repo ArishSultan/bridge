@@ -13,7 +13,9 @@ struct ItemView: View {
 
     var body: some View {
         if let pane = view.single {
-            PaneContainer(project: project, pane: pane, controller: controller, focused: true)
+            PaneDropTarget(project: project, item: view.id, pane: pane) {
+                PaneContainer(project: project, pane: pane, controller: controller, focused: true)
+            }
         } else {
             LayoutView(project: project, item: view.id, layout: view.layout, focused: view.focused, controller: controller)
         }
@@ -103,19 +105,63 @@ private struct HeaderedPane: View {
     let focused: Bool
     let controller: WindowController
 
-    @State private var dropSide: DropZone?
+    var body: some View {
+        VStack(spacing: 0) {
+            PaneHeader(project: project, item: item, pane: pane, focused: focused, controller: controller)
+            PaneDropTarget(project: project, item: item, pane: pane) {
+                PaneContainer(project: project, pane: pane, controller: controller, focused: focused)
+            }
+        }
+    }
+}
+
+/// A terminal other terminals can be dropped on (from a header in a split, or from the sidebar):
+/// the landing spot is highlighted before letting go.
+struct PaneDropTarget<Content: View>: View {
+    let project: Project
+    let item: ID
+    let pane: ID
+    @ViewBuilder let content: Content
+
+    @State private var zone: DropZone?
     @State private var size: CGSize = .zero
 
     var body: some View {
-        VStack(spacing: 0) {
-            PaneHeader(project: project, pane: pane, focused: focused, controller: controller)
-            PaneContainer(project: project, pane: pane, controller: controller, focused: focused)
-                .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
-                .overlay { DropHighlight(zone: dropSide) }
-                .onDrop(of: [.text], delegate: PaneDropDelegate(
-                    project: project, item: item, target: pane, size: size, zone: $dropSide))
-        }
+        // A running terminal reports drags itself (it's what AppKit delivers them to); this
+        // handles the stopped ones and draws the landing spot either way.
+        let reported = Store.shared.paneDropZone.flatMap { $0.pane == pane ? $0.zone : nil }
+        content
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
+            .overlay { DropHighlight(zone: zone ?? reported) }
+            .onDrop(of: [.bridgePane], delegate: PaneDropDelegate(
+                project: project, item: item, target: pane, size: size, zone: $zone))
     }
+}
+
+/// A terminal being dragged: which one, and the item it comes from. Dragged as Bridge's own type,
+/// which terminals don't accept (they take dropped text and files, and would type this in).
+struct PaneDrag: Equatable {
+    let project: ID
+    let item: ID
+    let pane: ID
+
+    /// Start dragging: remember it (drop targets need to know what's coming before it lands).
+    @MainActor
+    func provider() -> NSItemProvider {
+        Store.shared.draggedPane = self
+        let provider = NSItemProvider()
+        let text = "\(project):\(item):\(pane)"
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.bridgePane.identifier, visibility: .ownProcess) { done in
+            done(Data(text.utf8), nil)
+            return nil
+        }
+        return provider
+    }
+}
+
+extension UTType {
+    /// A terminal of Bridge's, dragged within the app.
+    static let bridgePane = UTType(exportedAs: "dev.arish.bridge.pane")
 }
 
 /// Where a dragged pane lands: next to the target on a side, or swapped with it.
@@ -150,8 +196,9 @@ private struct DropHighlight: View {
     }
 }
 
-/// Dropping a pane's header onto another pane: near an edge (within a third) splits there, the
-/// middle swaps the two.
+/// Dropping a terminal onto another one: near an edge (within a third) splits there; in the
+/// middle, two terminals of the same split swap places. A terminal from another sidebar item
+/// always goes beside (it joins this split).
 private struct PaneDropDelegate: DropDelegate {
     let project: Project
     let item: ID
@@ -159,54 +206,60 @@ private struct PaneDropDelegate: DropDelegate {
     let size: CGSize
     @Binding var zone: DropZone?
 
-    static let prefix = "bridge-pane:"
+    @MainActor private var dragged: PaneDrag? {
+        guard let drag = Store.shared.draggedPane, drag.project == project.id, drag.pane != target else { return nil }
+        return drag
+    }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [.bridgePane]) && MainActor.assumeIsolated { dragged != nil }
+    }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        zone = Self.zone(for: info.location, in: size)
-        return DropProposal(operation: .move)
+        MainActor.assumeIsolated {
+            guard let dragged else {
+                zone = nil
+                return DropProposal(operation: .forbidden)
+            }
+            zone = PaneDropZones.zone(for: info.location, in: size, sidesOnly: dragged.item != item)
+            return DropProposal(operation: .move)
+        }
     }
 
     func dropExited(info: DropInfo) { zone = nil }
 
     func performDrop(info: DropInfo) -> Bool {
-        let zone = zone ?? .center
-        self.zone = nil
-        guard let provider = info.itemProviders(for: [.text]).first else { return false }
-        let projectID = project.id
-        let item = item
-        let target = target
-        _ = provider.loadObject(ofClass: NSString.self) { object, _ in
-            guard let text = object as? String, text.hasPrefix(Self.prefix),
-                  let pane = ID(text.dropFirst(Self.prefix.count)), pane != target
-            else { return }
-            Task { @MainActor in
-                let store = Store.shared
-                switch zone {
-                case .center:
-                    store.updateLayout(projectID, item: item) { $0.swap(pane, target) }
-                case .side(let side):
-                    let splitID = store.newID()
-                    store.updateLayout(projectID, item: item) { $0.move(pane, to: target, side: side, splitID: splitID) }
-                }
+        MainActor.assumeIsolated {
+            defer {
+                zone = nil
+                Store.shared.draggedPane = nil
             }
+            guard let dragged, let zone else { return false }
+            Store.shared.drop(dragged, onto: target, in: item, zone: zone)
+            return true
         }
-        return true
     }
 
-    static func zone(for point: CGPoint, in size: CGSize) -> DropZone {
-        guard size.width > 0, size.height > 0 else { return .center }
+}
+
+/// Where on a terminal a dragged one lands: near an edge (within a third) beside it, else in the
+/// middle (swapping); `sidesOnly` always picks the nearest edge.
+enum PaneDropZones {
+    static func zone(for point: CGPoint, in size: CGSize, sidesOnly: Bool = false) -> DropZone {
+        guard size.width > 0, size.height > 0 else { return sidesOnly ? .side(.right) : .center }
         let distances: [(Side, CGFloat)] = [
             (.left, point.x / size.width), (.right, 1 - point.x / size.width),
             (.top, point.y / size.height), (.bottom, 1 - point.y / size.height),
         ]
         let nearest = distances.min { $0.1 < $1.1 }!
-        return nearest.1 < 1.0 / 3 ? .side(nearest.0) : .center
+        return nearest.1 < 1.0 / 3 || sidesOnly ? .side(nearest.0) : .center
     }
 }
 
 /// The header of a terminal in a view: drag handle, status, name, tag, isolation, controls.
 private struct PaneHeader: View {
     let project: Project
+    let item: ID
     let pane: ID
     let focused: Bool
     let controller: WindowController
@@ -224,8 +277,8 @@ private struct PaneHeader: View {
         HStack(spacing: 6) {
             Image(systemName: "line.3.horizontal")
                 .foregroundStyle(.tertiary)
-                .onDrag { NSItemProvider(object: "\(PaneDropDelegate.prefix)\(pane)" as NSString) }
-                .help("Drag onto another terminal: an edge splits there, the middle swaps them")
+                .help("Drag the header onto another terminal: an edge splits there, the middle swaps them")
+                .accessibilityHidden(true)
             StatusDot(status: session?.status ?? .notStarted)
             if controller.renaming == .pane(pane) {
                 TextField("Name", text: $draft)
@@ -267,6 +320,7 @@ private struct PaneHeader: View {
         .onTapGesture(count: 2) { controller.renaming = .pane(pane) }
         .onTapGesture { controller.focus(pane) }
         .onHover { hovering = $0 }
+        .onDrag { PaneDrag(project: project.id, item: item, pane: pane).provider() }
         .contextMenu {
             Button("Edit Terminal…") { controller.edit(pane) }
             Button("Rename") { controller.renaming = .pane(pane) }

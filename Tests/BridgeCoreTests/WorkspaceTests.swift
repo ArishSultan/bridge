@@ -105,6 +105,19 @@ struct WorkspaceJSONTests {
 struct LayoutTests {
     let shell = TerminalSpec()
 
+    @Test func insertsATerminalFromElsewhere() {
+        var layout = Layout.pane(id: 1, terminal: shell)
+        let inserted = layout.insert(9, terminal: TerminalSpec(name: "moved"), nextTo: 1, side: .left, splitID: 5)
+        #expect(inserted)
+        #expect(layout.panes == [9, 1])
+        #expect(layout.terminal(9)?.name == "moved")
+        // Already there, or no such target: nothing changes.
+        let again = layout.insert(9, terminal: shell, nextTo: 1, side: .right, splitID: 6)
+        let missing = layout.insert(7, terminal: shell, nextTo: 3, side: .right, splitID: 6)
+        #expect(!again && !missing)
+        #expect(layout.panes == [9, 1])
+    }
+
     /// 1 | 2, with 2 split into 2 / 3.
     private func threePanes() -> Layout {
         var layout = Layout.pane(id: 1, terminal: shell)

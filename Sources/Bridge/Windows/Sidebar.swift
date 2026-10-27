@@ -20,6 +20,15 @@ struct Sidebar: View {
                 ForEach(project.views) { view in
                     ItemRow(project: project, view: view, controller: controller)
                         .tag(view.id)
+                        // A terminal can be dragged into the split on screen, to sit beside one there.
+                        .itemProvider {
+                            guard let pane = view.single else {
+                                // A split only moves within the sidebar.
+                                Store.shared.draggedPane = nil
+                                return NSItemProvider()
+                            }
+                            return PaneDrag(project: project.id, item: view.id, pane: pane).provider()
+                        }
                 }
                 .onMove { store.moveItems(project.id, fromOffsets: $0, toOffset: $1) }
             }

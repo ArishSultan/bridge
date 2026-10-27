@@ -569,6 +569,74 @@ final class Store {
         }
     }
 
+    /// The terminal being dragged, while a drag is on.
+    @ObservationIgnored var draggedPane: PaneDrag?
+    /// Where a dragged terminal would land on the terminal it is over (drawn there).
+    var paneDropZone: (pane: ID, zone: DropZone)?
+
+    /// A terminal dragged over a running one (the terminal view reports it).
+    private func paneDragged(_ phase: TerminalSurfaceView.PaneDragPhase, onto target: ID, in projectID: ID) -> Bool {
+        guard let drag = draggedPane, drag.project == projectID, drag.pane != target,
+              let item = project(projectID)?.view(ofPane: target)?.id
+        else {
+            if paneDropZone?.pane == target { paneDropZone = nil }
+            return false
+        }
+        switch phase {
+        case .over(let point, let size):
+            let zone = PaneDropZones.zone(for: point, in: size, sidesOnly: drag.item != item)
+            if paneDropZone?.pane != target || paneDropZone?.zone != zone { paneDropZone = (target, zone) }
+            return true
+        case .exited:
+            if paneDropZone?.pane == target { paneDropZone = nil }
+            return true
+        case .dropped(let point, let size):
+            paneDropZone = nil
+            draggedPane = nil
+            drop(drag, onto: target, in: item, zone: PaneDropZones.zone(for: point, in: size, sidesOnly: drag.item != item))
+            return true
+        }
+    }
+
+    /// A dragged terminal lands on `target` (in the item `item`): beside it on a side, or (from
+    /// the same split) swapped with it in the middle. From another item it leaves that item (an
+    /// item of one terminal goes away) and joins this split, still running.
+    func drop(_ drag: PaneDrag, onto target: ID, in item: ID, zone: DropZone) {
+        let projectID = drag.project
+        guard let project = project(projectID), drag.pane != target else { return }
+        if drag.item == item {
+            switch zone {
+            case .center:
+                updateLayout(projectID, item: item) { $0.swap(drag.pane, target) }
+            case .side(let side):
+                let splitID = newID()
+                updateLayout(projectID, item: item) { $0.move(drag.pane, to: target, side: side, splitID: splitID) }
+            }
+            return
+        }
+        guard case .side(let side) = zone, let spec = project.terminal(drag.pane), project.view(item) != nil else { return }
+        let splitID = newID()
+        let firstLabel = project.view(item)?.single.flatMap { label(of: $0, in: project) }
+        update(projectID) { project in
+            guard let source = project.viewIndex(drag.item) else { return }
+            if project.views[source].single == drag.pane {
+                project.views.remove(at: source)
+            } else {
+                _ = project.views[source].remove(drag.pane)
+            }
+            guard let index = project.viewIndex(item) else { return }
+            // A terminal becoming a split takes its name from the first terminal.
+            if project.views[index].single != nil, project.views[index].name.isEmpty, let firstLabel {
+                project.views[index].name = firstLabel
+            }
+            guard project.views[index].layout.insert(drag.pane, terminal: spec, nextTo: target, side: side, splitID: splitID) else { return }
+            project.views[index].focused = drag.pane
+            project.active = item
+        }
+        startIfNeeded(drag.pane, in: projectID)
+        controllers[projectID]?.focus(drag.pane)
+    }
+
     /// The new split's id for moving panes around.
     func newID() -> ID { projects.nextID() }
 
@@ -628,6 +696,9 @@ final class Store {
         do {
             let surface = try TerminalSurfaceView(app: terminal, options: options, context: .window)
             surface.allowsProgramClipboardWrite = allowsClipboard(spec, in: projectID)
+            surface.onPaneDrag = { [weak self] phase in
+                self?.paneDragged(phase, onto: pane, in: projectID) ?? false
+            }
             surface.onFocus = { [weak self] in
                 self?.setFocused(projectID, pane: pane)
                 if let session = self?.sessions[pane] { Attention.shared.clear(session) }

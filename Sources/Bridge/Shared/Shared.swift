@@ -12,22 +12,36 @@ struct SurfaceHost: NSViewRepresentable {
     let surface: TerminalSurfaceView
     let focused: Bool
 
+    /// What the latest update said, read when the deferred focus change runs: an update that
+    /// was queued before the user clicked another pane mustn't take the keyboard back.
+    final class Coordinator {
+        var focused = false
+        var adopted: ObjectIdentifier?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func makeNSView(context: Context) -> NSView {
-        let container = NSView()
-        adopt(into: container)
-        return container
+        NSView()
     }
 
     func updateNSView(_ container: NSView, context: Context) {
+        let coordinator = context.coordinator
+        let wasFocused = coordinator.focused
+        let newSurface = coordinator.adopted != ObjectIdentifier(surface)
         adopt(into: container)
-        if focused {
-            // Wait until the view is in the window before giving it the keyboard.
-            DispatchQueue.main.async { [surface] in
-                guard let window = surface.window, window.firstResponder !== surface,
-                      !(window.firstResponder is NSText) // Leave a text field being edited alone.
-                else { return }
-                window.makeFirstResponder(surface)
-            }
+        coordinator.adopted = ObjectIdentifier(surface)
+        coordinator.focused = focused
+        // Only when this pane becomes the focused one (or its terminal is new), not on every
+        // redraw: otherwise it takes the keyboard from whatever the user moved to.
+        guard focused, !wasFocused || newSurface else { return }
+        // Wait until the view is in the window before giving it the keyboard.
+        DispatchQueue.main.async { [surface, weak coordinator] in
+            guard let coordinator, coordinator.focused, coordinator.adopted == ObjectIdentifier(surface),
+                  let window = surface.window, window.firstResponder !== surface,
+                  !(window.firstResponder is NSText) // Leave a text field being edited alone.
+            else { return }
+            window.makeFirstResponder(surface)
         }
     }
 

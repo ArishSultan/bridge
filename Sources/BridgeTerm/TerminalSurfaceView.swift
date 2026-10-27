@@ -74,6 +74,20 @@ public final class TerminalSurfaceView: NSView {
     /// Sees every key press first; returning true keeps it from the terminal. The app uses it for
     /// Enter on an exited program, ⌃R, and the completion menu.
     public var interceptKey: ((NSEvent) -> Bool)?
+    /// The pasteboard type of one of the app's terminals being dragged (to split or swap). Such a
+    /// drag is the host's to handle (`onPaneDrag`), never typed in like dropped text.
+    public static let paneDragType = NSPasteboard.PasteboardType("dev.arish.bridge.pane")
+
+    public enum PaneDragPhase {
+        /// Over this terminal at a point (from its top left), in a view of this size.
+        case over(CGPoint, CGSize)
+        case exited
+        case dropped(CGPoint, CGSize)
+    }
+
+    /// Another terminal is dragged over this one; returns whether it may land here.
+    public var onPaneDrag: ((PaneDragPhase) -> Bool)?
+
     /// Whether programs may set the clipboard (OSC 52). Off in sandboxed terminals that don't
     /// allow the clipboard: what a program puts there would be pasted outside the sandbox.
     public var allowsProgramClipboardWrite = true
@@ -126,7 +140,7 @@ public final class TerminalSurfaceView: NSView {
         self.surface = surface
 
         updateTrackingAreas()
-        registerForDraggedTypes([.fileURL, .string])
+        registerForDraggedTypes([.fileURL, .string, Self.paneDragType])
     }
 
     required init?(coder: NSCoder) {
@@ -310,7 +324,12 @@ public final class TerminalSurfaceView: NSView {
         let center = NotificationCenter.default
         center.removeObserver(self, name: NSWindow.didChangeScreenNotification, object: nil)
         center.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification, object: nil)
+        center.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil)
+        center.removeObserver(self, name: NSWindow.didResignKeyNotification, object: nil)
         guard let window else { return }
+        // The cursor shows focus only while the window is the one being typed in.
+        center.addObserver(self, selector: #selector(windowKeyChanged), name: NSWindow.didBecomeKeyNotification, object: window)
+        center.addObserver(self, selector: #selector(windowKeyChanged), name: NSWindow.didResignKeyNotification, object: window)
         center.addObserver(
             self, selector: #selector(windowDidChangeScreen), name: NSWindow.didChangeScreenNotification, object: window)
         center.addObserver(
@@ -319,6 +338,11 @@ public final class TerminalSurfaceView: NSView {
         windowDidChangeScreen()
         windowDidChangeOcclusion()
         viewDidChangeBackingProperties()
+    }
+
+    @objc private func windowKeyChanged() {
+        guard let surface, let window else { return }
+        ghostty_surface_set_focus(surface, focused && window.isKeyWindow)
     }
 
     /// The renderer syncs frames to the display the window is on.
@@ -352,7 +376,7 @@ public final class TerminalSurfaceView: NSView {
     private func setFocused(_ focused: Bool) {
         guard self.focused != focused else { return }
         self.focused = focused
-        if let surface { ghostty_surface_set_focus(surface, focused) }
+        if let surface { ghostty_surface_set_focus(surface, focused && (window?.isKeyWindow ?? true)) }
         if focused {
             if bell {
                 bell = false
@@ -727,11 +751,31 @@ public final class TerminalSurfaceView: NSView {
 
     // MARK: - Drag and drop
 
+    private func isPaneDrag(_ sender: any NSDraggingInfo) -> Bool {
+        sender.draggingPasteboard.types?.contains(Self.paneDragType) ?? false
+    }
+
+    /// Where a drag is, from this view's top left.
+    private func dragPoint(_ sender: any NSDraggingInfo) -> CGPoint {
+        let point = convert(sender.draggingLocation, from: nil)
+        return CGPoint(x: point.x, y: bounds.height - point.y)
+    }
+
     public override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-        .copy
+        draggingUpdated(sender)
+    }
+
+    public override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        guard isPaneDrag(sender) else { return .copy }
+        return onPaneDrag?(.over(dragPoint(sender), bounds.size)) == true ? .move : []
+    }
+
+    public override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        if let sender, isPaneDrag(sender) { _ = onPaneDrag?(.exited) }
     }
 
     public override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        if isPaneDrag(sender) { return onPaneDrag?(.dropped(dragPoint(sender), bounds.size)) ?? false }
         guard let surface, let text = sender.draggingPasteboard.terminalString, !text.isEmpty else { return false }
         text.withCString { ghostty_surface_text(surface, $0, UInt(text.utf8.count)) }
         return true
