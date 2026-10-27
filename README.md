@@ -1,96 +1,88 @@
 # Bridge
 
-A macOS workspace for your projects, servers and terminals.
+**Terminals your coding agents can't escape.** Bridge is a Mac app where every terminal in a
+project is sandboxed by macOS itself: Claude Code, Codex or any script can change the project, but
+can't read your SSH keys, your other repositories or the Keychain. Your SSH hosts, port forwards
+and Vaultwarden keys live in the same app, set up once.
 
-This is **Bridge v2**, rewritten from scratch in Swift. SwiftUI and AppKit draw the window, and
-[libghostty](https://github.com/ghostty-org/ghostty) (the core of the Ghostty terminal) runs every
-terminal. v1 (Rust, gpui) lives on the `main` branch.
+**[Download for Mac](https://github.com/ArishSultan/bridge/releases/latest)** · Apple Silicon ·
+macOS 15 or later · free and open source (MIT)
 
-## What's in it
-
-Everything v1 did, on native macOS components:
-
-- **Terminals** rendered on the GPU by libghostty's Metal renderer, each with its own pty, I/O
-  thread and renderer thread, so one flooding output doesn't slow the others or the UI.
-- **Projects** (folders) in windows of their own, with terminals and views (split layouts) in
-  the sidebar; panes rearranged by dragging their headers; shells, tasks (start, stop, restart,
-  restart on exit) and SSH sessions; keep-alive; the git branch menu with worktrees; the Global
-  and Welcome windows; windows reopened at launch. Uses v1's `projects.json`.
-- **Sandboxed terminals**: macOS's sandbox (Seatbelt) with v1's policies, or Docker; profiles
-  edited in the Global window; New Claude Terminal (⌘⌥C).
-- **SSH hosts and port forwards** in the Global window: the system ssh, saved passwords in the
-  Keychain, forwards supervised with reconnects and logs.
-- **Vaultwarden**: unlock your own server and its SSH keys go into a private ssh-agent, in memory
-  only, until it locks.
-- **Shell integration** for zsh and bash (v1's prompt styles and Starship), command history
-  (⌃R), attention for the bell, long commands and finished tasks, with notifications and the
-  Dock badge.
-- **Suggestions and completions** in zsh: gray history suggestions (→ accepts) and a completion
-  menu at the cursor (Tab).
-- v1's settings, color schemes and deep dark look. Settings, projects, profiles and history
-  are the same files v1 uses, in `~/.config/bridge/`.
-
-Requires macOS 26 on Apple Silicon.
-
-## Building
-
-Needs Xcode (with its Metal toolchain) and [Zig 0.15.2](https://ziglang.org/download/)
-(`brew install zig@0.15`).
-
-```sh
-git submodule update --init
-xcodebuild -downloadComponent MetalToolchain   # once, if Xcode doesn't have it yet
-./scripts/build-ghostty.sh   # builds libghostty into vendor/ (a few minutes, once)
-./scripts/bundle.sh          # builds build/Bridge.app (Apple Silicon)
-cp -R build/Bridge.app /Applications/
+```text
+~/code/app % cat ~/.ssh/id_ed25519
+cat: /Users/me/.ssh/id_ed25519: Operation not permitted        ✋ cat couldn't read ~/.ssh/id_ed25519
 ```
 
-`swift build` and `swift test` work for development; `swift run Bridge` starts the app from the
-build folder.
+## Why Bridge
 
-### Layout
+| | Bridge | Terminal, iTerm2, Ghostty, Warp |
+|---|---|---|
+| Agents and scripts confined to the project | Every project terminal, by default | No |
+| Credentials, shell history, other repos | Hidden from sandboxed programs | Readable by anything you run |
+| What the sandbox refused | Shown on the terminal, with a fix | — |
+| SSH hosts, port forwards with reconnects | Built in | Separate tools |
+| SSH keys from your own Vaultwarden | Loaded in memory while unlocked | — |
+| Terminal engine | Ghostty's (GPU-rendered) | Varies |
 
-| Path | What |
-|---|---|
-| `Sources/BridgeCore` | Plain Swift logic, unit-tested: settings, projects and layouts, history, completions, shell integration scripts, sandbox policies, SSH commands, profiles. |
-| `Sources/BridgeSystem` | Talking to the system: the shells' socket, the Keychain, Vaultwarden (client, crypto, ssh-agent). |
-| `Sources/BridgeTerm` | The only code that calls libghostty's C API: the app with its callbacks, and `TerminalSurfaceView`, the AppKit view a terminal renders into. |
-| `Sources/Bridge` | The SwiftUI app: windows, sidebar, panes, sheets, settings, port forwards. |
-| `Sources/BridgeHelper` | `bridge-helper`, bundled in the app: messages from bash, SSH password prompts, and the guard that ends child processes with the app. |
-| `Sources/CArgon2` | The Argon2 reference implementation, for Vaultwarden. |
-| `vendor/ghostty` | Ghostty, pinned to a release as a submodule. |
-| `patches/ghostty` | Fixes from newer Ghostty the pinned release needs, applied by the build script. |
+## How it works
+
+- **Open a folder** (⌘O) and it becomes a project, in a window of its own.
+- **⌘T** opens a sandboxed shell in it right away. **⌘⇧T** makes any other kind: an *open*
+  (unsandboxed) shell for SSH, Docker and deploys, a task like `npm run dev`, an SSH session, or a
+  terminal in another sandbox profile.
+- **⌘⌥C** starts Claude Code in the Agents sandbox (File → New Agent Terminal also has Codex and
+  Gemini).
+- **Splits**: ⌘D and ⌘⇧D add a terminal beside the one you're in; drag a terminal's header to
+  rearrange.
+- When the sandbox refuses something, the terminal shows what, with *Allow* and *Open Terminal
+  Instead*. See [how sandboxed terminals work](docs/sandbox.md) for exactly what is and isn't allowed.
+- **Settings** (⌘,) hold SSH hosts (import them from `~/.ssh/config`), port forwards, sandbox
+  profiles and Vaultwarden. **Home** (⌘⇧H) has terminals in your home folder, outside any project.
+
+Your shell stays yours: your prompt, your Tab completion, your ⌃R (Bridge's history, suggestions and
+prompt styles are there when you turn them on in Settings).
+
+## Install
+
+Download the `.dmg` from the [latest release](https://github.com/ArishSultan/bridge/releases/latest),
+open it and drag Bridge to Applications. Bridge updates itself. Each release lists how to check
+where a download came from (`gh attestation verify`).
+
+Release builds that aren't notarized yet need one extra step the first time: open Bridge once, then
+click **Open Anyway** in System Settings → Privacy & Security.
 
 ## Shortcuts
 
 | Keys | What |
 |---|---|
-| ⌘T / ⌘⇧T | New terminal (sandboxed / open) |
-| ⌘⇧E / ⌘⌥C | New task / New Claude terminal |
-| ⌘O / ⌘⇧G | Open a folder as a project / the Global window |
-| ⌘D / ⌘⇧D | Add a terminal to the right / below (makes a view) |
-| ⌘W / ⌘⇧W | Close a terminal of a view / the window |
-| ⌘] / ⌘[ | Next / previous terminal of a view |
-| ⌃Tab, ⌘⇧] / ⌘⇧[ | Next / previous item |
-| ⌘1 … ⌘9 | Go to an item |
-| ⌘B | Show or hide the sidebar |
-| ⌃R | Command history |
-| ⌘+ / ⌘- / ⌘0, ⌘K | Font size, clear |
+| ⌘T / ⌘⇧T | New sandboxed terminal / new terminal of any kind |
+| ⌘⇧E / ⌘⌥C | New task / new Claude Code terminal |
+| ⌘D / ⌘⇧D | Split right / down |
+| ⌘W / ⌘⇧W | Close the terminal (⌘Z brings it back) / the window |
+| ⌘] / ⌘[ | Next / previous pane of a split |
+| ⌃Tab, ⌘⇧] / ⌘⇧[ | Next / previous in the sidebar |
+| ⌘1 … ⌘9 | Go to a terminal in the sidebar |
+| ⌘F, ⌘G / ⌘⇧G | Find in the scrollback, next / previous match |
+| ⌘K | Clear the scrollback |
+| ⌘+ / ⌘- / ⌘0 | Font size |
+| ⌘O / ⌘⇧H | Open a folder / the Home window |
+| ⌃⌘S | Show or hide the sidebar |
 | ⌘, | Settings |
 
-## Releases
+## Where things are kept
 
-- **CI** (`.github/workflows/ci.yml`) builds and runs the tests on every push and pull request.
-  libghostty is cached between runs and only rebuilt when the submodule or its patches change.
-- **Release** (`.github/workflows/release.yml`) uses
-  [release-please](https://github.com/googleapis/release-please) with
-  [Conventional Commits](https://www.conventionalcommits.org): `feat: …` (minor), `fix: …`
-  (patch), `feat!: …` (breaking). Merging its "Release v…" pull request tags the commit, publishes
-  the release and attaches `Bridge-<version>-macos-arm64.dmg` and `.zip` with `SHA256SUMS.txt`.
-  The version is in `version.txt`.
+| Where | What |
+|---|---|
+| `~/Library/Application Support/Bridge` | Settings, projects, SSH hosts, sandboxes, the Vaultwarden account and command history (SwiftData) |
+| Keychain | Saved SSH passwords |
+| Memory only | Vaultwarden keys, while unlocked |
+| `~/.config/bridge` | Shell integration scripts, sandboxed shells' own histories, project icons |
 
-Releases are ad-hoc signed but not notarized, so macOS blocks the app the first time. Run
-`xattr -dr com.apple.quarantine /Applications/Bridge.app`, or try to open it once and click
-**Open Anyway** in System Settings → Privacy & Security.
+No sandbox can read the first or the last. v1's JSON files in `~/.config/bridge` are read once, the
+first time this version starts.
 
-See [docs/decisions.md](docs/decisions.md) for why things work the way they do.
+## Building and contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md), and [docs/decisions.md](docs/decisions.md) for why things
+work the way they do. Bridge is MIT licensed; it embeds [libghostty](https://github.com/ghostty-org/ghostty)
+(MIT) and [Sparkle](https://sparkle-project.org) (MIT).

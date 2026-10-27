@@ -30,12 +30,21 @@ needed with Xcode 27).
 (`TerminalConfig`) and applied to every open terminal at once. Keybindings stay at Ghostty's macOS
 defaults; the actions they produce (split, new tab, move focus) are handled by the app.
 
-**Same settings file.** v2 reads and writes v1's `settings.json` with the same keys, and keeps keys
-it doesn't use yet, so going back and forth between versions loses nothing.
+**SwiftData, not JSON files.** Settings, projects, SSH hosts, port forwards, sandbox profiles, the
+Vaultwarden account and command history are rows in a SwiftData store in
+`~/Library/Application Support/Bridge`, a folder no sandbox can read. The app keeps working on its
+value types and saving brings the rows in line, so the store never leaks into the views. Each
+project, item, host, forward and command is a row of its own; only trees and variants (a split
+layout, a sandbox's rules, the settings) are encoded in their row. v1's JSON files are read once,
+the first time v2 starts; a file that can't be read is copied aside and reported, never taken for
+an empty list (which once wiped projects on the next save). Settings are not in UserDefaults:
+sandboxed programs could read and change those through cfprefsd.
 
-**Native chrome, v1's colors.** Windows, the sidebar, toolbar, sheets and menus are SwiftUI's
-own components, tinted with v1's theme: the terminal's background, and one surface a step toward
-its foreground for everything else. "Match app" is v1's near-black, not a named scheme.
+**Native chrome, the terminal's colors only in the terminal.** Windows, the sidebar, toolbar,
+sheets and menus are SwiftUI's own components and look the way the system draws them (Liquid Glass
+on macOS 26): glass is for the toolbar, sidebar and floating controls, never for content. The
+color scheme colors the terminals; the rest follows the system's appearance and accent color.
+macOS 15 is supported, with materials where macOS 26 has glass.
 
 **Bridge's own shell integration, over a socket.** libghostty owns the pty, so v1's private
 escape codes can't reach the app. The scripts emit standard OSC 133 and OSC 7 for libghostty and
@@ -48,12 +57,72 @@ always lines up; bash gets history and ⌃R but no inline suggestions.
 
 **Passwords through the app, not the helper.** The helper is its own (ad-hoc signed) binary, so
 it can't read the app's Keychain items without a prompt. ssh's askpass asks the app instead,
-with a nonce given only to that ssh: programs in other terminals (sandboxed ones included) can
-reach the socket but can't ask for passwords.
+with a nonce given only to that ssh, for that host, for two minutes, and never for a jump host's
+prompt. The socket is in `$TMPDIR/bridge-run`, which sandboxes can't write: they can connect (their
+shells report there) but can't move it aside and listen in its place.
+
+**What sandboxes report isn't trusted.** Commands a sandboxed shell reports go into the history
+marked as such and are never suggested in open terminals; completions in a sandbox never list a
+folder it can't read; programs in a sandbox can't set the clipboard or open anything but web
+links; git run by the app never runs hooks, fsmonitor or a pager from the repository.
 
 **A sandbox fix carried over from v1.** Seatbelt lets a more specific operation win over a
 wildcard whatever the order, so `deny file-read*` didn't hide a path inside a folder allowed by
 `allow file-read-data`. Hidden paths now deny `file-read-data` by name.
+
+## Changed after the 2026 review
+
+These replace the v1 notes below where they disagree.
+
+**⌘T is a sandboxed shell, right away.** The idea of the app is that a terminal in a project is
+sandboxed, so the quickest way to get one is to press ⌘T. Every other kind (open shells, tasks,
+SSH, other sandboxes) is made with New Terminal… (⌘⇧T). A new project starts with a sandboxed
+shell instead of an empty window.
+
+**Terminals keep running when you switch away.** That is what every terminal does; "Stop when
+hidden" is a terminal's own choice (Keep Alive off), not the default.
+
+**⌘W closes the terminal, ⌘Z brings it back.** Closing asks only when a program is busy.
+
+**The shell stays the user's.** Bridge's prompt, Tab completion and ⌃R history are offered, not
+imposed: the shell's own prompt and Tab by default, and ⌃R goes to Bridge's history only when the
+shell has no ⌃R of its own (fzf, atuin and the like).
+
+**Shared things live in Settings.** SSH hosts, sandboxes and Vaultwarden are Settings pages, where
+Mac users look for them. The Global window is now Home: terminals in the home folder.
+
+**"…" when more is asked.** Menu items and buttons that open a sheet end in "…", as on every Mac.
+
+**A sandbox says what it refused.** Every deny rule carries the terminal's marker; the app reads
+denials from the system log and shows them on that terminal, with a way forward (allow the path,
+or open an unsandboxed terminal there). Paths every sandbox hides can't be allowed.
+
+## Sandbox rules in v2
+
+**Policies on the command line.** The policy is passed to `sandbox-exec -p` (through
+`bridge-helper sandbox`, which puts the terminal's own tty into it), never written to a file a
+sandboxed program could replace before the next start.
+
+**Temporary files of its own.** Each sandboxed terminal gets its own `TMPDIR`; `/tmp` stays
+writable (local databases keep sockets there), but not the rest of `/var/folders`, where other
+programs and the app keep their temporary files and sockets.
+
+**Caches of its own for runnable code.** Go, Cargo, pip, uv, pre-commit and other tools that keep
+code they run later get per-project caches (`~/Library/Caches/Bridge/Sandboxes`), so a sandbox
+can't plant something a build outside it would run.
+
+**Never writable, whatever the profile.** Shell startup files and completion dumps, LaunchAgents,
+`~/.local/bin`, `~/.cargo/bin`, agents' hooks, commands and settings, git hooks and config, and the
+links between a worktree and its repository: everything a program outside the sandbox runs or
+follows later. **Never readable:** the app's records, shell histories, other projects' caches and
+credential files.
+
+**Sockets by allowlist.** The project, the terminal's own folders, `/tmp` (minus launchd's
+ssh-agent, tmux and X11) and `/var/run` (minus launchd's ssh-agent); the app's socket by exact path.
+
+**Agents preset.** Claude Code, Codex and Gemini get a preset with their state folders writable,
+the Keychain (Claude Code keeps its login there) and opening a browser to sign in. Their hooks and
+settings stay read-only.
 
 ## v1
 
@@ -152,7 +221,7 @@ a limited account on each server, with its own key.
 **A real Mac app.** Built with `scripts/bundle.sh` it is a normal `.app` with its name and menus in
 the menu bar, several windows, and the usual Mac behavior when the last one closes.
 
-**Plain labels.** Buttons and menu items say what they do, without trailing "…".
+**Plain labels.** Buttons and menu items say what they do. (v2 adds "…" where more is asked.)
 
 **Theme from the terminal colours.** The window's colours are derived from the terminal's colour
 scheme, so every scheme gives a matching app. Only the terminal is solid; the rest is one surface.
