@@ -161,6 +161,7 @@ struct HostSheet: View {
 /// The SSH keys in Vaultwarden, or a way to unlock it.
 struct VaultKeyPicker: View {
     @Binding var selection: (id: String, name: String)?
+    @State private var showUnlock = false
 
     private var store: Store { .shared }
 
@@ -171,8 +172,9 @@ struct VaultKeyPicker: View {
                 Text(selection.map { "Uses “\($0.name)”." } ?? "Unlock Vaultwarden to choose a key.")
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Unlock Vaultwarden…") { store.showVaultSheet = true }
+                Button("Unlock Vaultwarden…") { showUnlock = true }
             }
+            .sheet(isPresented: $showUnlock) { VaultSheet() }
         } else {
             Picker("Key", selection: Binding(
                 get: { selection?.id ?? "" },

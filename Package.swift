@@ -34,8 +34,16 @@ let package = Package(
         // sandbox policies, SSH commands. No AppKit, no libghostty; unit-tested.
         .target(name: "BridgeCore"),
 
-        // Talking to the rest of the system: the shells' socket, processes, the Keychain.
-        .target(name: "BridgeSystem", dependencies: ["BridgeCore"]),
+        // Argon2 (the reference implementation), for Vaultwarden accounts that use Argon2id.
+        .target(
+            name: "CArgon2",
+            exclude: ["LICENSE", "README.md"],
+            cSettings: [.define("ARGON2_NO_THREADS")]
+        ),
+
+        // Talking to the rest of the system: the shells' socket, processes, the Keychain,
+        // Vaultwarden.
+        .target(name: "BridgeSystem", dependencies: ["BridgeCore", "CArgon2"]),
 
         .executableTarget(
             name: "Bridge",
@@ -46,6 +54,6 @@ let package = Package(
         // and the guard that ends child processes when the app goes away.
         .executableTarget(name: "BridgeHelper"),
 
-        .testTarget(name: "BridgeCoreTests", dependencies: ["BridgeCore"]),
+        .testTarget(name: "BridgeCoreTests", dependencies: ["BridgeCore", "BridgeSystem"]),
     ]
 )

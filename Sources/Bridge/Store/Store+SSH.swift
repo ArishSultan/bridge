@@ -79,18 +79,3 @@ extension Store {
         }
     }
 }
-
-// MARK: - Vaultwarden (filled in with the vault)
-
-extension Store {
-    /// Where a host's Vaultwarden key is served, while the vault is unlocked.
-    func vaultIdentity(for host: SSHHost) -> SSHCommand.VaultIdentity? {
-        nil
-    }
-}
-
-extension Store {
-    var vaultUnlocked: Bool { !vaultKeys.isEmpty || vaultSessionActive }
-    var vaultSessionActive: Bool { false }
-    func lockVault() {}
-}

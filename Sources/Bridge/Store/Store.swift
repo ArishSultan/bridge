@@ -41,8 +41,10 @@ final class Store {
 
     /// The SSH keys in the unlocked vault (empty while locked).
     var vaultKeys: [VaultKey] = []
-    /// The Vaultwarden link or unlock sheet is showing.
-    var showVaultSheet = false
+    /// The unlocked vault: its agent and the public half of each key.
+    @ObservationIgnored var vaultSession: VaultSession?
+    @ObservationIgnored var vaultLastUsed = Date()
+    @ObservationIgnored var vaultTimer: Timer?
 
     /// Running (or stopped) terminals by pane id.
     private(set) var sessions: [ID: PaneSession] = [:]
@@ -114,6 +116,7 @@ final class Store {
     /// Before quitting.
     func shutdown() {
         forwards.stopAll()
+        lockVault()
         shellServer?.shutdown()
     }
 
@@ -669,7 +672,7 @@ extension BridgeCore.Layout.Focus {
 }
 
 /// An SSH key from Vaultwarden, as hosts refer to it.
-struct VaultKey: Identifiable, Equatable {
+struct VaultKey: Identifiable, Equatable, Sendable {
     let id: String
     let name: String
 }

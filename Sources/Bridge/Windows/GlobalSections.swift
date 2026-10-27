@@ -153,6 +153,7 @@ private struct ForwardRow: View {
 
 /// Lock or unlock Vaultwarden.
 struct VaultButton: View {
+    @State private var showSheet = false
     private var store: Store { .shared }
 
     var body: some View {
@@ -163,11 +164,12 @@ struct VaultButton: View {
                 .help("Vaultwarden is unlocked: its SSH keys are in use. Click to lock.")
         } else {
             Button(store.profiles.vault == nil ? "Link Vaultwarden" : "Unlock Vaultwarden", systemImage: "lock") {
-                store.showVaultSheet = true
+                showSheet = true
             }
             .labelStyle(.iconOnly)
             .buttonStyle(.borderless)
             .help(store.profiles.vault == nil ? "Link Vaultwarden, to sign in with its SSH keys" : "Unlock Vaultwarden")
+            .sheet(isPresented: $showSheet) { VaultSheet() }
         }
     }
 }
