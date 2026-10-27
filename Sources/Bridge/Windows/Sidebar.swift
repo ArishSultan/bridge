@@ -11,45 +11,163 @@ struct Sidebar: View {
     var body: some View {
         List(selection: selection) {
             Section(controller.isGlobal ? "Terminals" : "Terminals and Views") {
+                if project.views.isEmpty {
+                    Text(controller.isGlobal ? "Shells and SSH sessions outside any project." : "No terminals yet.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
                 ForEach(project.views) { view in
                     ItemRow(project: project, view: view, controller: controller)
-                        .tag(view.id)
+                        .tag(SidebarTag.item(view.id))
                 }
                 .onMove { store.moveItems(project.id, fromOffsets: $0, toOffset: $1) }
             }
             if controller.isGlobal {
-                GlobalSections(controller: controller)
+                Section("Shared") {
+                    ForEach(GlobalPage.allCases) { page in
+                        Label(page.title, systemImage: page.systemImage)
+                            .badge(badge(page))
+                            .tag(SidebarTag.page(page))
+                    }
+                }
             }
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
         .background(store.chrome.surface)
-        .safeAreaInset(edge: .bottom) {
-            HStack(spacing: 8) {
-                Button {
-                    controller.newTerminal(.shell)
-                } label: {
-                    Label("New Terminal", systemImage: "plus")
-                        .frame(maxWidth: .infinity)
-                }
-                .help(controller.isGlobal ? "New terminal (⌘T)" : "New sandboxed terminal (⌘T)")
-                Button {
-                    store.newClaudeTerminal(in: project.id)
-                } label: {
-                    Image(systemName: "sparkles")
-                }
-                .help("New Claude terminal (⌘⌥C)")
-            }
-            .controlSize(.large)
-            .buttonStyle(.bordered)
-            .padding(10)
+        .overlay(alignment: .bottomTrailing) {
+            NewTerminalButton(project: project, controller: controller)
+                .padding(14)
         }
     }
 
-    private var selection: Binding<ID?> {
+    private var selection: Binding<SidebarTag?> {
         Binding(
-            get: { project.active },
-            set: { if let id = $0 { controller.select(id) } })
+            get: {
+                if let page = controller.globalPage { return .page(page) }
+                return project.active.map(SidebarTag.item)
+            },
+            set: { tag in
+                switch tag {
+                case .item(let id)?:
+                    controller.globalPage = nil
+                    controller.select(id)
+                case .page(let page)?:
+                    controller.globalPage = page
+                case nil:
+                    break
+                }
+            })
+    }
+
+    private func badge(_ page: GlobalPage) -> Int {
+        switch page {
+        case .hosts: store.profiles.hosts.count
+        case .sandboxes: store.profiles.sandboxes.count + 1
+        case .vault: 0
+        }
+    }
+}
+
+/// What a sidebar row stands for: an item of the project, or (in Global) a shared page.
+enum SidebarTag: Hashable {
+    case item(ID)
+    case page(GlobalPage)
+}
+
+/// The Global window's pages for what every project shares.
+enum GlobalPage: String, CaseIterable, Identifiable, Hashable {
+    case hosts, sandboxes, vault
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .hosts: "SSH Hosts"
+        case .sandboxes: "Sandboxes"
+        case .vault: "Vaultwarden"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .hosts: "server.rack"
+        case .sandboxes: "checkmark.shield"
+        case .vault: "key.viewfinder"
+        }
+    }
+}
+
+/// The floating + button: a menu of every kind of terminal, each opening its own form.
+struct NewTerminalButton: View {
+    let project: Project
+    let controller: WindowController
+
+    private var store: Store { .shared }
+
+    var body: some View {
+        Menu {
+            Section("New Terminal") {
+                Button {
+                    controller.newTerminal(.shell)
+                } label: {
+                    Label(controller.isGlobal ? "Shell" : "Sandboxed Shell", systemImage: "terminal")
+                }
+                if !controller.isGlobal {
+                    Button {
+                        controller.newTerminal(.openShell)
+                    } label: {
+                        Label("Open Shell", systemImage: "exclamationmark.shield")
+                    }
+                }
+                Button {
+                    controller.newTerminal(.task)
+                } label: {
+                    Label("Task…", systemImage: "play.circle")
+                }
+                Button {
+                    store.newClaudeTerminal(in: project.id)
+                } label: {
+                    Label("Claude", systemImage: "sparkles")
+                }
+            }
+            Section("SSH") {
+                if store.profiles.hosts.isEmpty {
+                    Button {
+                        store.openGlobal()
+                        store.controllers[store.globalID]?.globalPage = .hosts
+                        store.controllers[store.globalID]?.hostSheet = .init(id: 0)
+                    } label: {
+                        Label("Add an SSH Host…", systemImage: "server.rack")
+                    }
+                } else {
+                    Menu {
+                        ForEach(store.profiles.hosts) { host in
+                            Button(host.displayName) {
+                                store.addItem(project.id, spec: TerminalSpec(kind: .ssh(host: host.id), isolation: .open))
+                            }
+                        }
+                    } label: {
+                        Label("SSH Session", systemImage: "server.rack")
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 20, weight: .semibold))
+                .frame(width: 30, height: 30)
+        }
+        .menuStyle(.button)
+        .menuIndicator(.hidden)
+        .buttonStyle(.glassProminent)
+        .buttonBorderShape(.circle)
+        .controlSize(.extraLarge)
+        .tint(.accentColor)
+        .fixedSize()
+        .shadow(color: .black.opacity(0.25), radius: 8, y: 3)
+        .help(controller.isGlobal
+              ? "New terminal: a shell, a task or an SSH session"
+              : "New terminal: a sandboxed or open shell, a task, Claude, or an SSH session")
     }
 }
 

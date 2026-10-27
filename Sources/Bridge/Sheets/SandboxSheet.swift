@@ -31,73 +31,68 @@ struct SandboxSheet: View {
     private var isProject: Bool { profileID == nil }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Form {
+        SheetScaffold(
+            title: isProject ? "Project Sandbox" : profileID == 0 ? "New Sandbox" : "Edit Sandbox",
+            subtitle: isProject ? "The default for project terminals" : nil,
+            confirm: "Save",
+            destructive: isProject || profileID == 0 ? nil : ("Delete Sandbox…", { confirmDelete = true }),
+            onConfirm: save
+        ) {
+            Section {
+                if !isProject {
+                    TextField("Name", text: $name, prompt: Text("Agents"))
+                }
+                Picker("Isolation", selection: $docker) {
+                    Label("macOS sandbox", systemImage: "checkmark.shield").tag(false)
+                    Label("Docker container", systemImage: "shippingbox").tag(true)
+                }
+                .disabled(isProject)
+            }
+
+            if docker {
                 Section {
-                    if isProject {
-                        LabeledContent("Name", value: "Project (default)")
-                    } else {
-                        TextField("Name", text: $name, prompt: Text("Agents"))
-                    }
-                    Picker("Isolation", selection: $docker) {
-                        Text("macOS sandbox").tag(false)
-                        Text("Docker container").tag(true)
-                    }
-                    .pickerStyle(.segmented)
-                    .disabled(isProject)
+                    TextField("Image", text: $image, prompt: Text("ubuntu:24.04"))
+                    Toggle("Network", isOn: $dockerNetwork)
+                } footer: {
+                    Text("The project folder is mounted at /workspace. Nothing else on your Mac is visible inside.")
                 }
-
-                if docker {
-                    Section("Container") {
-                        TextField("Image", text: $image, prompt: Text("ubuntu:24.04"))
-                        Toggle("Network", isOn: $dockerNetwork)
-                        listEditor("Extra mounts", text: $mounts, hint: "One per line: ~/data:/data or ~/models:/models:ro")
-                        listEditor("Pass variables", text: $env, hint: "Names of environment variables to pass in, one per line")
-                    }
-                    Section {
-                        Text("The project folder is mounted at /workspace. Nothing else on your Mac is visible inside.")
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    Section("Files") {
-                        Toggle("Confine reads", isOn: $confineReads)
+                Section("Extra mounts") {
+                    listEditor(text: $mounts, hint: "One per line: ~/data:/data or ~/models:/models:ro")
+                }
+                Section("Pass variables") {
+                    listEditor(text: $env, hint: "Names of environment variables, one per line")
+                }
+            } else {
+                Section {
+                    Toggle(isOn: $confineReads) {
+                        Text("Confine reads")
                         Text(confineReads
-                             ? "Programs read only the project, system folders, what they may write, and the list below."
+                             ? "Programs read only the project, system folders, what they may write, and the paths below."
                              : "Programs can read everything your account can, except what is hidden.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        if confineReads {
-                            listEditor("Also readable", text: $readable, hint: "Shell and toolchain setup is found automatically")
-                        }
-                        listEditor("Writable besides the project", text: $writable, hint: "Caches and tool settings")
-                        listEditor("Hidden", text: $hidden, hint: "Neither readable nor writable: credentials")
                     }
-                    Section("Programs and services") {
-                        Picker("Network", selection: $network) {
-                            ForEach(Network.allCases, id: \.self) { Text($0.label) }
-                        }
-                        TextField("Blocked programs", text: $blocked, prompt: Text("docker kubectl"))
-                        Toggle("Clipboard (pasting with ⌘V always works)", isOn: $allowClipboard)
-                        Toggle("Open apps, files and links", isOn: $allowOpen)
-                        Toggle("Block the Keychain", isOn: $blockKeychain)
+                    Picker("Network", selection: $network) {
+                        ForEach(Network.allCases, id: \.self) { Text($0.label) }
+                    }
+                    TextField("Blocked programs", text: $blocked, prompt: Text("docker kubectl"))
+                }
+                Section("Services") {
+                    Toggle("Block the Keychain", isOn: $blockKeychain)
+                    Toggle("Allow the clipboard", isOn: $allowClipboard)
+                    Toggle("Allow opening apps, files and links", isOn: $allowOpen)
+                }
+                if confineReads {
+                    Section("Also readable") {
+                        listEditor(text: $readable, hint: "Shell and toolchain setup is found automatically.")
                     }
                 }
-            }
-            .formStyle(.grouped)
-
-            HStack {
-                if !isProject && profileID != 0 {
-                    Button("Delete…", role: .destructive) { confirmDelete = true }
+                Section("Writable besides the project") {
+                    listEditor(text: $writable, hint: "Caches and tool settings, one path per line.")
                 }
-                Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Save", action: save)
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
+                Section("Hidden") {
+                    listEditor(text: $hidden, hint: "Neither readable nor writable: credentials, one path per line.")
+                }
             }
-            .padding()
         }
-        .frame(width: 560, height: 640)
         .onAppear(perform: load)
         .confirmationDialog("Delete “\(name)”?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
@@ -109,15 +104,12 @@ struct SandboxSheet: View {
         }
     }
 
-    private func listEditor(_ title: String, text: Binding<String>, hint: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
+    private func listEditor(text: Binding<String>, hint: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
             TextEditor(text: text)
                 .font(.callout.monospaced())
-                .frame(minHeight: 64, maxHeight: 120)
+                .frame(minHeight: 70, maxHeight: 140)
                 .scrollContentBackground(.hidden)
-                .padding(4)
-                .background(.background.secondary, in: RoundedRectangle(cornerRadius: 6))
             Text(hint).font(.caption).foregroundStyle(.secondary)
         }
     }

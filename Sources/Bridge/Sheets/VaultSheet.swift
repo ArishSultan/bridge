@@ -23,12 +23,17 @@ struct VaultSheet: View {
     private var linked: Bool { store.profiles.vault != nil }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Form {
-                Section {
-                    TextField("Server", text: $server, prompt: Text("https://vault.example.com"))
-                        .focused($focus, equals: .server)
-                    TextField("Email", text: $email, prompt: Text("you@example.com"))
+        SheetScaffold(
+            title: linked ? "Unlock Vaultwarden" : "Link Vaultwarden",
+            confirm: linked ? "Unlock" : "Link and Unlock",
+            confirmDisabled: busy,
+            onConfirm: unlock
+        ) {
+            Section {
+                TextField("Server", text: $server, prompt: Text("vault.example.com"))
+                    .focused($focus, equals: .server)
+                TextField("Email", text: $email, prompt: Text("you@example.com"))
+                LabeledContent("Master password") {
                     HStack {
                         Group {
                             if showPassword {
@@ -37,6 +42,8 @@ struct VaultSheet: View {
                                 SecureField("Master password", text: $password)
                             }
                         }
+                        .labelsHidden()
+                        .multilineTextAlignment(.trailing)
                         .focused($focus, equals: .password)
                         Button(showPassword ? "Hide" : "Show", systemImage: showPassword ? "eye.slash" : "eye") {
                             showPassword.toggle()
@@ -44,46 +51,36 @@ struct VaultSheet: View {
                         .labelStyle(.iconOnly)
                         .buttonStyle(.borderless)
                     }
-                    if provider != nil {
-                        TextField("Two-step login code", text: $code, prompt: Text("123456"))
-                            .focused($focus, equals: .code)
-                    }
-                } footer: {
-                    Text("Your own server: an address like vault.example.com, https://example.com/vault behind a proxy, or http://192.168.1.10:8080 on your network.")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
+                if provider != nil {
+                    TextField("Two-step code", text: $code, prompt: Text("123456"))
+                        .focused($focus, equals: .code)
+                }
+            } footer: {
+                Text("Your own server: vault.example.com, https://example.com/vault behind a proxy, or http://192.168.1.10:8080 on your network.")
+            }
+            Section {
+                Picker("Lock after", selection: $lockMinutes) {
+                    Text("15 minutes").tag(UInt32(15))
+                    Text("1 hour").tag(UInt32(60))
+                    Text("4 hours").tag(UInt32(240))
+                    Text("Never").tag(UInt32(0))
+                }
+            } footer: {
+                Text("The master password and keys are never saved. Keys stay in memory while unlocked.")
+            }
+            if busy {
                 Section {
-                    Picker("Lock after", selection: $lockMinutes) {
-                        Text("15 min").tag(UInt32(15))
-                        Text("1 hour").tag(UInt32(60))
-                        Text("4 hours").tag(UInt32(240))
-                        Text("Never").tag(UInt32(0))
+                    HStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        Text(message?.text ?? "Unlocking…").foregroundStyle(.secondary)
                     }
-                    .pickerStyle(.segmented)
-                } footer: {
-                    Text("The master password and keys are never saved. Keys stay in memory while unlocked; locking, quitting or the idle time removes them.")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
-                if let message {
-                    Text(message.text).foregroundStyle(message.error ? Color.red : Color.secondary)
-                }
+            } else if let message {
+                FormMessage(text: message.text, isError: message.error)
             }
-            .formStyle(.grouped)
-            .disabled(busy)
-
-            HStack {
-                if busy { ProgressView().controlSize(.small) }
-                Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(linked ? "Unlock" : "Link and Unlock", action: unlock)
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(busy)
-            }
-            .padding()
         }
-        .frame(width: 480)
-        .navigationTitle(linked ? "Unlock Vaultwarden" : "Link Vaultwarden")
+        .disabled(busy)
         .onAppear {
             if let account = store.profiles.vault {
                 server = account.server

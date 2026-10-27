@@ -17,38 +17,14 @@ struct ProjectSheet: View {
     @FocusState private var emojiFocused: Bool
 
     var body: some View {
-        VStack(spacing: 0) {
-            Form {
-                Section {
-                    LabeledContent("Icon") {
-                        HStack(spacing: 10) {
-                            ProjectIcon(project: preview, size: 36)
-                            TextField("", text: $emoji, prompt: Text("Emoji"))
-                                .labelsHidden()
-                                .frame(width: 70)
-                                .focused($emojiFocused)
-                                .onChange(of: emoji) {
-                                    // Keep only the last character typed or picked.
-                                    if let last = emoji.last {
-                                        icon = String(last)
-                                        if emoji.count > 1 { emoji = String(last) }
-                                    }
-                                }
-                            Button("Emoji & Symbols") {
-                                emojiFocused = true
-                                NSApp.orderFrontCharacterPalette(nil)
-                            }
-                            Button("Import Image…", action: importIcon)
-                            if icon != nil {
-                                Button("No Icon") {
-                                    icon = nil
-                                    emoji = ""
-                                }
-                            }
-                        }
-                    }
-                    TextField("Name", text: $name, prompt: Text("Named after the folder"))
-                    LabeledContent("Color") {
+        SheetScaffold(title: "Edit Project", confirm: "Save", onConfirm: save) {
+            Section {
+                HStack(spacing: 14) {
+                    ProjectIcon(project: preview, size: 52)
+                    VStack(alignment: .leading, spacing: 8) {
+                        TextField("Name", text: $name, prompt: Text("Named after the folder"))
+                            .textFieldStyle(.plain)
+                            .font(.title3.weight(.semibold))
                         HStack(spacing: 8) {
                             ColorSwatch(color: nil, selected: color == nil) { color = nil }
                             ForEach(ProjectColor.allCases) { option in
@@ -57,33 +33,54 @@ struct ProjectSheet: View {
                         }
                     }
                 }
-                Section {
-                    LabeledContent("Folder") {
-                        HStack {
-                            TextField("", text: $dir).labelsHidden()
-                            Button("Choose…", action: chooseFolder)
+                .padding(.vertical, 4)
+            }
+            Section("Icon") {
+                LabeledContent("Emoji") {
+                    HStack {
+                        TextField("Emoji", text: $emoji, prompt: Text("🚀"))
+                            .labelsHidden()
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 60)
+                            .focused($emojiFocused)
+                            .onChange(of: emoji) {
+                                // Keep only the last character typed or picked.
+                                if let last = emoji.last {
+                                    icon = String(last)
+                                    if emoji.count > 1 { emoji = String(last) }
+                                }
+                            }
+                        Button("Emoji & Symbols…") {
+                            emojiFocused = true
+                            NSApp.orderFrontCharacterPalette(nil)
                         }
                     }
-                    if folderMissing {
-                        Text("Folder not found").foregroundStyle(.red)
-                    } else {
-                        Text(Paths.expandHome(dir)).foregroundStyle(.secondary).font(.caption)
+                }
+                HStack {
+                    Button("Import Image…", action: importIcon)
+                    Spacer()
+                    if icon != nil {
+                        Button("No Icon", role: .destructive) {
+                            icon = nil
+                            emoji = ""
+                        }
                     }
                 }
             }
-            .formStyle(.grouped)
-
-            HStack {
-                Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Save", action: save)
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
+            Section {
+                LabeledContent("Folder") {
+                    HStack {
+                        TextField("Folder", text: $dir)
+                            .labelsHidden()
+                            .multilineTextAlignment(.trailing)
+                        Button("Choose…", action: chooseFolder)
+                    }
+                }
+            } footer: {
+                Text(folderMissing ? "Folder not found." : Paths.expandHome(dir))
+                    .foregroundStyle(folderMissing ? Color.red : Color.secondary)
             }
-            .padding()
         }
-        .frame(width: 500)
         .onAppear {
             name = project.name
             icon = project.icon

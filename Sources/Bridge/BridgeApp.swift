@@ -6,6 +6,16 @@ import SwiftUI
 struct BridgeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
+    init() {
+        // Bridge reopens its own windows (from projects.json). macOS's window restoration would
+        // otherwise, after a crash or force quit, restore "no windows" and keep even the
+        // Welcome window from opening.
+        UserDefaults.standard.register(defaults: [
+            "ApplePersistenceIgnoreState": true,
+            "NSQuitAlwaysKeepsWindows": false,
+        ])
+    }
+
     var body: some Scene {
         // The first scene opens at launch; it reopens the windows of the last session and closes
         // itself when there were any.

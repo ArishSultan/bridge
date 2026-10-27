@@ -2,7 +2,8 @@ import AppKit
 import BridgeCore
 import SwiftUI
 
-/// New Terminal / Edit Terminal: what it runs, where, and how isolated.
+/// New or edit one kind of terminal: a shell, a task, or an SSH session. The kind is chosen
+/// before (from the + menu) and can't change here.
 struct TerminalSheet: View {
     let project: Project
     let request: TerminalSheetRequest
@@ -22,10 +23,7 @@ struct TerminalSheet: View {
     @State private var isolation: IsolationChoice = .project
     @State private var error: String?
 
-    enum Kind: String, CaseIterable, Identifiable {
-        case shell = "Shell", task = "Task", ssh = "SSH"
-        var id: Self { self }
-    }
+    enum Kind { case shell, task, ssh }
 
     enum IsolationChoice: Hashable {
         case project
@@ -36,96 +34,87 @@ struct TerminalSheet: View {
     private var store: Store { .shared }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Form {
-                Section {
-                    if request.isEdit {
-                        LabeledContent("Type", value: kind.rawValue)
+        SheetScaffold(title: title, subtitle: project.name, confirm: request.isEdit ? "Save" : "Create", onConfirm: commit) {
+            switch kind {
+            case .task:
+                Section("Runs") {
+                    TextField("Command", text: $command, prompt: Text("npm run dev"))
+                        .font(.body.monospaced())
+                    Toggle("Start when it's opened", isOn: $autoStart)
+                    Toggle("Restart when it exits", isOn: $restartOnExit)
+                }
+            case .ssh:
+                Section("Host") {
+                    if store.profiles.hosts.isEmpty {
+                        Text("Add SSH hosts in the Global window first.").foregroundStyle(.secondary)
                     } else {
-                        Picker("Type", selection: $kind) {
-                            ForEach(Kind.allCases) { Text($0.rawValue).tag($0) }
-                        }
-                        .pickerStyle(.segmented)
-                    }
-                    TextField("Name", text: $name, prompt: Text("Named after what it runs"))
-                    TextField("Tag", text: $tag, prompt: Text("api"))
-                    Toggle("Keep alive", isOn: $background)
-                        .help("Keeps running when you switch to another terminal or view")
-                }
-
-                switch kind {
-                case .task:
-                    Section("Task") {
-                        TextField("Command", text: $command, prompt: Text("npm run dev"))
-                            .font(.body.monospaced())
-                        Toggle("Start when it is opened", isOn: $autoStart)
-                        Toggle("Restart when it exits", isOn: $restartOnExit)
-                    }
-                case .ssh:
-                    Section("SSH host") {
-                        if store.profiles.hosts.isEmpty {
-                            Text("Add SSH hosts in the Global window first.").foregroundStyle(.secondary)
-                        } else {
-                            Picker("Host", selection: $host) {
-                                Text("Choose a host").tag(ID?.none)
-                                ForEach(store.profiles.hosts) { host in
-                                    Text("\(host.displayName) · \(host.address)").tag(ID?.some(host.id))
-                                }
-                            }
-                        }
-                    }
-                case .shell:
-                    EmptyView()
-                }
-
-                if kind != .ssh {
-                    Section {
-                        LabeledContent(global ? "Folder in your home folder" : "Folder in the project") {
-                            HStack {
-                                TextField("", text: $folder, prompt: Text("."))
-                                    .labelsHidden()
-                                Button("Choose…", action: chooseFolder)
-                            }
-                        }
-                        if !global {
-                            Picker("Isolation", selection: $isolation) {
-                                Text("Project sandbox (writes only inside the project)").tag(IsolationChoice.project)
-                                ForEach(store.profiles.sandboxes) { profile in
-                                    Text("\(profile.name) sandbox\(profile.engine.isDocker ? " (Docker)" : "")")
-                                        .tag(IsolationChoice.profile(profile.id))
-                                }
-                                Text("Open — not sandboxed").tag(IsolationChoice.open)
-                            }
-                            .pickerStyle(.radioGroup)
-                            if isolation == .open {
-                                Label("Open terminals can read and change anything your account can, including other projects and your SSH keys.",
-                                      systemImage: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(.orange)
-                                    .font(.callout)
+                        Picker("Connect to", selection: $host) {
+                            ForEach(store.profiles.hosts) { host in
+                                Text(host.displayName).tag(ID?.some(host.id))
                             }
                         }
                     }
                 }
+            case .shell:
+                EmptyView()
+            }
 
-                if let error {
-                    Text(error).foregroundStyle(.red)
+            Section {
+                TextField("Name", text: $name, prompt: Text("Named after what it runs"))
+                TextField("Tag", text: $tag, prompt: Text("Optional, like api"))
+                Toggle(isOn: $background) {
+                    Text("Keep alive")
+                    Text("Keeps running when you switch to another terminal or view.")
                 }
             }
-            .formStyle(.grouped)
 
-            HStack {
-                Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button(request.isEdit ? "Save" : "Create", action: commit)
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
+            if kind != .ssh {
+                Section {
+                    LabeledContent(global ? "Folder" : "Folder in project") {
+                        HStack {
+                            TextField("Folder", text: $folder, prompt: Text("."))
+                                .labelsHidden()
+                                .multilineTextAlignment(.trailing)
+                            Button("Choose…", action: chooseFolder)
+                        }
+                    }
+                    if !global {
+                        Picker("Isolation", selection: $isolation) {
+                            Label("Project sandbox", systemImage: "checkmark.shield").tag(IsolationChoice.project)
+                            ForEach(store.profiles.sandboxes) { profile in
+                                Label("\(profile.name) sandbox", systemImage: profile.engine.isDocker ? "shippingbox" : "checkmark.shield")
+                                    .tag(IsolationChoice.profile(profile.id))
+                            }
+                            Divider()
+                            Label("Open, not sandboxed", systemImage: "exclamationmark.shield").tag(IsolationChoice.open)
+                        }
+                    }
+                } footer: {
+                    if !global {
+                        Text(isolation == .open
+                             ? "Open terminals can read and change anything your account can, including other projects and your SSH keys."
+                             : "Sandboxed terminals write only inside the project and can't see your credentials.")
+                            .foregroundStyle(isolation == .open ? Color.orange : Color.secondary)
+                    }
+                }
             }
-            .padding()
+
+            if let error {
+                FormMessage(text: error)
+            }
         }
-        .frame(width: 520)
-        .navigationTitle(request.isEdit ? "Edit Terminal" : "New Terminal")
         .onAppear(perform: load)
+    }
+
+    private var title: String {
+        switch (kind, request.isEdit) {
+        case (.shell, false): isolation == .open && !global ? "New Open Shell" : "New Shell"
+        case (.task, false): "New Task"
+        case (.ssh, false): "New SSH Session"
+        case (.shell, true): "Edit Shell"
+        case (.task, true): "Edit Task"
+        case (.ssh, true): "Edit SSH Session"
+        }
     }
 
     private func load() {
@@ -136,7 +125,7 @@ struct TerminalSheet: View {
         case .openShell:
             spec = TerminalSpec(isolation: .open)
         case .task:
-            spec = TerminalSpec(kind: .task(command: "", autoStart: false, restartOnExit: false),
+            spec = TerminalSpec(kind: .task(command: "", autoStart: true, restartOnExit: false),
                                 isolation: global ? .open : .sandboxed(profile: nil))
         case .spec(let preset):
             spec = preset
@@ -146,7 +135,8 @@ struct TerminalSheet: View {
         background = spec.background
         folder = spec.folder
         switch spec.kind {
-        case .shell: kind = .shell
+        case .shell:
+            kind = .shell
         case .task(let c, let a, let r):
             kind = .task
             command = c
@@ -159,7 +149,7 @@ struct TerminalSheet: View {
         switch spec.isolation {
         case .open: isolation = .open
         case .sandboxed(nil): isolation = .project
-        case .sandboxed(let id?): isolation = .profile(id)
+        case .sandboxed(let id?): isolation = store.profiles.sandbox(id) == nil ? .project : .profile(id)
         }
     }
 
@@ -212,14 +202,14 @@ struct TerminalSheet: View {
         case .profile(let id): .sandboxed(profile: id)
         case .open: .open
         }
-        let spec = TerminalSpec(
+        let trimmedTag = tag.trimmingCharacters(in: .whitespaces)
+        save(TerminalSpec(
             name: name.trimmingCharacters(in: .whitespaces),
-            tag: tag.trimmingCharacters(in: .whitespaces).isEmpty ? nil : tag.trimmingCharacters(in: .whitespaces),
+            tag: trimmedTag.isEmpty ? nil : trimmedTag,
             kind: terminalKind,
             folder: folder,
-            isolation: global ? .open : chosenIsolation,
-            background: background)
-        save(spec)
+            isolation: global || kind == .ssh ? .open : chosenIsolation,
+            background: background))
         dismiss()
     }
 }

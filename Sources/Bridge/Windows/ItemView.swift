@@ -366,7 +366,9 @@ struct PaneContainer: View {
                 .help("Open: not sandboxed")
             }
             if case .exited(let code) = session.status {
-                ExitedBar(code: code, ssh: spec?.kind.isSSH ?? false) { store.start(pane, in: project.id) }
+                ExitedBar(code: code, ssh: spec?.kind.isSSH ?? false, started: session.startedAt, ended: session.endedAt) {
+                    store.start(pane, in: project.id)
+                }
             }
             if let link = session.hoveredLink {
                 Text(link)
@@ -388,6 +390,8 @@ struct PaneContainer: View {
 private struct ExitedBar: View {
     let code: Int?
     let ssh: Bool
+    let started: Date?
+    let ended: Date?
     let restart: () -> Void
 
     var body: some View {
@@ -395,6 +399,12 @@ private struct ExitedBar: View {
             Image(systemName: code == 0 || code == nil ? "checkmark.circle" : "exclamationmark.triangle")
                 .foregroundStyle(code == 0 || code == nil ? Color.secondary : Color.orange)
             Text(code.map { "Exited with code \($0)" } ?? "Exited")
+            if let ended {
+                Text(timing(ended))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .help(ended.formatted(date: .complete, time: .standard))
+            }
             Text("Press Return to \(ssh ? "reconnect" : "restart")")
                 .foregroundStyle(.secondary)
             Button(ssh ? "Reconnect" : "Restart", action: restart)
@@ -404,6 +414,19 @@ private struct ExitedBar: View {
         .padding(.vertical, 8)
         .glassEffect(in: Capsule())
         .padding(12)
+    }
+
+    /// "ran 3m 12s · 14:05" (with the date when it wasn't today).
+    private func timing(_ ended: Date) -> String {
+        var parts: [String] = []
+        if let started {
+            let seconds = Int(ended.timeIntervalSince(started).rounded())
+            parts.append("ran " + Duration.seconds(seconds).formatted(.units(allowed: [.hours, .minutes, .seconds], width: .narrow, maximumUnitCount: 2)))
+        }
+        parts.append(Calendar.current.isDateInToday(ended)
+            ? ended.formatted(date: .omitted, time: .shortened)
+            : ended.formatted(date: .abbreviated, time: .shortened))
+        return parts.joined(separator: " · ")
     }
 }
 

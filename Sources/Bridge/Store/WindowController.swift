@@ -14,6 +14,8 @@ final class WindowController {
     /// The New/Edit Terminal sheet.
     var terminalSheet: TerminalSheetRequest?
     var showProjectSheet = false
+    /// In the Global window: a shared page (hosts, sandboxes, Vaultwarden) shown instead of an item.
+    var globalPage: GlobalPage?
     /// The command history sheet, for this pane.
     var historyPane: ID?
     /// Switching away would stop these running terminals: asks Keep alive / Stop and switch.

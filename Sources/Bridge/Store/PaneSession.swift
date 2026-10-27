@@ -14,6 +14,7 @@ final class PaneSession: Identifiable {
         case running
         /// The program exited on its own; its output stays on screen.
         case exited(code: Int?)
+        // When it exited is in `endedAt`, how long it ran from `startedAt`.
         /// Stopped by hand (or by leaving its item).
         case stopped
 
@@ -23,7 +24,14 @@ final class PaneSession: Identifiable {
     let id: ID
     let projectID: ID
     private(set) var surface: TerminalSurfaceView?
-    var status: Status = .notStarted
+    var status: Status = .notStarted {
+        didSet {
+            if case .exited = status, endedAt == nil { endedAt = Date() }
+        }
+    }
+    /// When the program started, and when it exited (for the exit bar).
+    private(set) var startedAt: Date?
+    private(set) var endedAt: Date?
 
     private(set) var title = ""
     private(set) var directory: String?
@@ -60,6 +68,8 @@ final class PaneSession: Identifiable {
 
     func attach(_ surface: TerminalSurfaceView) {
         self.surface = surface
+        startedAt = Date()
+        endedAt = nil
         status = .running
         stoppedByHand = false
         title = ""

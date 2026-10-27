@@ -30,61 +30,59 @@ struct HostSheet: View {
     private var store: Store { .shared }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Form {
-                Section {
-                    TextField("Name", text: $name, prompt: Text(host.isEmpty ? "Production" : host))
-                    TextField("Host", text: $host, prompt: Text("example.com"))
-                    TextField("Port", text: $port, prompt: Text("22"))
-                    TextField("User", text: $user, prompt: Text("From ~/.ssh/config"))
+        SheetScaffold(title: hostID == 0 ? "New SSH Host" : "Edit SSH Host", confirm: hostID == 0 ? "Add" : "Save", onConfirm: save) {
+            Section {
+                TextField("Host", text: $host, prompt: Text("example.com"))
+                TextField("User", text: $user, prompt: Text("From ~/.ssh/config"))
+                TextField("Port", text: $port, prompt: Text("22"))
+                TextField("Name", text: $name, prompt: Text(host.isEmpty ? "Production" : host))
+            }
+            Section {
+                Picker("Sign in with", selection: $auth) {
+                    Label("Agent and ~/.ssh/config", systemImage: "person.badge.key").tag(AuthChoice.agent)
+                    Label("Key file", systemImage: "doc.badge.gearshape").tag(AuthChoice.key)
+                    Label("Password", systemImage: "key").tag(AuthChoice.password)
+                    Label("Vaultwarden key", systemImage: "key.viewfinder").tag(AuthChoice.vault)
                 }
-                Section("Sign in with") {
-                    Picker("Sign in with", selection: $auth) {
-                        ForEach(AuthChoice.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    switch auth {
-                    case .agent:
-                        Text("Your ssh-agent, keys and ~/.ssh/config, as in any terminal.")
-                            .foregroundStyle(.secondary)
-                    case .key:
-                        LabeledContent("Key file") {
-                            HStack {
-                                TextField("", text: $keyPath, prompt: Text("~/.ssh/id_ed25519")).labelsHidden()
-                                Button("Choose…", action: chooseKey)
-                            }
+                switch auth {
+                case .agent:
+                    EmptyView()
+                case .key:
+                    LabeledContent("Key file") {
+                        HStack {
+                            TextField("Key file", text: $keyPath, prompt: Text("~/.ssh/id_ed25519"))
+                                .labelsHidden()
+                                .multilineTextAlignment(.trailing)
+                            Button("Choose…", action: chooseKey)
                         }
-                    case .password:
-                        SecureField("Password", text: $password,
-                                    prompt: Text(hasSavedPassword ? "Saved in Keychain — type to replace" : "Asked when connecting if empty"))
-                    case .vault:
-                        VaultKeyPicker(selection: $vaultItem)
                     }
+                case .password:
+                    SecureField("Password", text: $password,
+                                prompt: Text(hasSavedPassword ? "Saved in Keychain, type to replace" : "Asked when connecting if empty"))
+                case .vault:
+                    VaultKeyPicker(selection: $vaultItem)
                 }
-                Section("Connection") {
-                    TextField("Keep-alive (seconds)", text: $keepalive, prompt: Text("0: off"))
-                    Picker("When the connection drops", selection: $onDisconnect) {
-                        ForEach(OnDisconnect.allCases, id: \.self) { Text($0.label) }
-                    }
-                    .pickerStyle(.segmented)
-                }
-                if let error {
-                    Text(error).foregroundStyle(.red)
+            } footer: {
+                Text(authHelp)
+            }
+            Section("Connection") {
+                TextField("Keep-alive", text: $keepalive, prompt: Text("Seconds, 0 for off"))
+                Picker("When it drops", selection: $onDisconnect) {
+                    ForEach(OnDisconnect.allCases, id: \.self) { Text($0.label) }
                 }
             }
-            .formStyle(.grouped)
-            HStack {
-                Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(hostID == 0 ? "Add" : "Save", action: save)
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-            }
-            .padding()
+            if let error { FormMessage(text: error) }
         }
-        .frame(width: 500)
         .onAppear(perform: load)
+    }
+
+    private var authHelp: String {
+        switch auth {
+        case .agent: "Your ssh-agent, keys and ~/.ssh/config, as in any terminal."
+        case .key: "Only this key is offered."
+        case .password: "Saved passwords stay in your Keychain and are given only to Bridge's own ssh."
+        case .vault: "The key is used while Vaultwarden is unlocked."
+        }
     }
 
     private func load() {
@@ -203,34 +201,26 @@ struct ForwardSheet: View {
     private var store: Store { .shared }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Form {
-                Section {
-                    Picker("Type", selection: $kind) {
-                        ForEach(ForwardKind.allCases, id: \.self) { Text($0.label) }
-                    }
-                    .pickerStyle(.segmented)
-                    Text(help).font(.caption).foregroundStyle(.secondary)
-                    TextField(kind == .remote ? "Server port" : "Local port", text: $bind, prompt: Text("8080 or 127.0.0.1:8080"))
-                    if kind != .dynamic {
-                        TextField("Target", text: $target, prompt: Text("localhost:5432"))
-                    }
-                    TextField("Name", text: $name, prompt: Text("Database"))
-                    Toggle("Keep a connection log", isOn: $showLogs)
+        SheetScaffold(title: forwardID == 0 ? "New Port Forward" : "Edit Port Forward",
+                      subtitle: store.profiles.host(hostID)?.displayName,
+                      confirm: forwardID == 0 ? "Add" : "Save", onConfirm: save) {
+            Section {
+                Picker("Type", selection: $kind) {
+                    ForEach(ForwardKind.allCases, id: \.self) { Text($0.label) }
                 }
-                if let error { Text(error).foregroundStyle(.red) }
+                TextField(kind == .remote ? "Server port" : "Local port", text: $bind, prompt: Text("8080 or 127.0.0.1:8080"))
+                if kind != .dynamic {
+                    TextField("Target", text: $target, prompt: Text("localhost:5432"))
+                }
+            } footer: {
+                Text(help)
             }
-            .formStyle(.grouped)
-            HStack {
-                Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(forwardID == 0 ? "Add" : "Save", action: save)
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
+            Section {
+                TextField("Name", text: $name, prompt: Text("Database"))
+                Toggle("Keep a connection log", isOn: $showLogs)
             }
-            .padding()
+            if let error { FormMessage(text: error) }
         }
-        .frame(width: 460)
         .onAppear {
             guard let (forward, _) = store.profiles.forward(forwardID) else { return }
             kind = forward.kind

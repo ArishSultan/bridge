@@ -116,7 +116,9 @@ struct ProjectWindow: View {
 
     @ViewBuilder
     private func detail(_ project: Project) -> some View {
-        if let active = project.active, let view = project.view(active) {
+        if controller.isGlobal, let page = controller.globalPage {
+            GlobalPageView(page: page, controller: controller)
+        } else if let active = project.active, let view = project.view(active) {
             ItemView(project: project, view: view, controller: controller)
                 .id(view.id)
         } else {
