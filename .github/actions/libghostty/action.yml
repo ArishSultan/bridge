@@ -44,4 +44,22 @@ runs:
       run: |
         # Ghostty's shaders need the Metal compiler, a separate download on newer Xcode.
         xcrun -sdk macosx metal --version >/dev/null 2>&1 || xcodebuild -downloadComponent MetalToolchain
-        ./scripts/build-ghostty.sh
+        # Zig 0.15 can't link against every macOS SDK: with some, its build program fails with
+        # every libSystem symbol undefined. Try the default Xcode, then older installed ones
+        # (only for libghostty; the app builds with the default Xcode).
+        for developer in "" /Applications/Xcode_26.3.app /Applications/Xcode_26.2.app /Applications/Xcode_26.0.1.app; do
+          if [ -n "$developer" ]; then
+            [ -d "$developer" ] || continue
+            export DEVELOPER_DIR="$developer/Contents/Developer"
+            xcrun -sdk macosx metal --version >/dev/null 2>&1 || xcodebuild -downloadComponent MetalToolchain
+            rm -rf vendor/ghostty/.zig-cache
+          fi
+          echo "::group::libghostty with $(xcrun --sdk macosx --show-sdk-path)"
+          if ./scripts/build-ghostty.sh; then
+            echo "::endgroup::"
+            exit 0
+          fi
+          echo "::endgroup::"
+        done
+        echo "::error::libghostty didn't build with any installed Xcode"
+        exit 1
