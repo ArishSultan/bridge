@@ -9,15 +9,15 @@ struct SSHTests {
 
     @Test func interactiveArgumentsLikeV1() {
         let agent = SSHCommand.interactive(host(.agent), savedPassword: false, vault: nil, helper: nil)
-        #expect(agent.arguments == ["-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3", "me@example.com"])
+        #expect(agent.arguments == ["-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3", "--", "me@example.com"])
         let key = SSHCommand.interactive(host(.key(path: "/k"), port: 2222, keepalive: 0), savedPassword: false, vault: nil, helper: nil)
-        #expect(key.arguments == ["-p", "2222", "-i", "/k", "-o", "IdentitiesOnly=yes", "me@example.com"])
+        #expect(key.arguments == ["-p", "2222", "-i", "/k", "-o", "IdentitiesOnly=yes", "--", "me@example.com"])
     }
 
     @Test func savedPasswordUsesAskpass() {
         let command = SSHCommand.interactive(host(.password, keepalive: 0), savedPassword: true, vault: nil, helper: "/h")
         #expect(command.arguments == [
-            "-o", "PreferredAuthentications=keyboard-interactive,password", "-o", "NumberOfPasswordPrompts=1", "me@example.com",
+            "-o", "PreferredAuthentications=keyboard-interactive,password", "-o", "NumberOfPasswordPrompts=1", "--", "me@example.com",
         ])
         #expect(command.environment == ["SSH_ASKPASS": "/h", "SSH_ASKPASS_REQUIRE": "force", "BRIDGE_ASKPASS": "4"])
         let unsaved = SSHCommand.interactive(host(.password, keepalive: 0), savedPassword: false, vault: nil, helper: "/h")
@@ -27,7 +27,7 @@ struct SSHTests {
     @Test func vaultKeyOnlyWhileUnlocked() {
         let vault = SSHCommand.VaultIdentity(socket: "/s", publicKey: "/p.pub")
         let unlocked = SSHCommand.interactive(host(.vault(item: "i", name: "n"), keepalive: 0), savedPassword: false, vault: vault, helper: nil)
-        #expect(unlocked.arguments == ["-o", "IdentityAgent=/s", "-i", "/p.pub", "-o", "IdentitiesOnly=yes", "me@example.com"])
+        #expect(unlocked.arguments == ["-o", "IdentityAgent=/s", "-i", "/p.pub", "-o", "IdentitiesOnly=yes", "--", "me@example.com"])
     }
 
     @Test func forwardingArguments() {
@@ -35,7 +35,7 @@ struct SSHTests {
         let command = SSHCommand.forwarding(host(.agent, keepalive: 0), forward, savedPassword: false, vault: nil, helper: nil)
         #expect(command.arguments == [
             "-o", "ExitOnForwardFailure=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=15",
-            "-o", "BatchMode=yes", "-N", "-T", "-v", "-L", "8080:db:5432", "me@example.com",
+            "-o", "BatchMode=yes", "-N", "-T", "-v", "-L", "8080:db:5432", "--", "me@example.com",
         ])
         #expect(Forward(id: 1, kind: .remote, bind: "9000", target: "localhost:3000").sshFlag == ["-R", "9000:localhost:3000"])
         #expect(Forward(id: 1, kind: .remote, bind: "9000", target: "localhost:3000").summary == "server localhost:9000 → localhost:3000")
@@ -59,9 +59,16 @@ struct SSHTests {
         let project = Project(id: 1, name: "g", dir: "/tmp")
         let spec = TerminalSpec(kind: .ssh(host: 4), isolation: .open)
         let command = SSHCommand.interactive(host(.agent, keepalive: 0), savedPassword: false, vault: nil, helper: nil)
-        #expect(Launch.plan(for: spec, in: project, settings: Settings(), ssh: .ready(command)).command == "ssh me@example.com")
+        #expect(Launch.plan(for: spec, in: project, settings: Settings(), ssh: .ready(command)).command == "ssh -- me@example.com")
         #expect(Launch.plan(for: spec, in: project, settings: Settings(), ssh: .vaultLocked).command?.contains("Vaultwarden is locked") == true)
         #expect(TerminalSpec(kind: .ssh(host: 4), isolation: .sandboxed(profile: nil)).effectiveIsolation == .open)
+    }
+
+    @Test func refusesOptionLikeDestinations() {
+        #expect(host(.agent).hasSafeDestination)
+        #expect(!SSHHost(id: 1, name: "x", host: "-oProxyCommand=sh").hasSafeDestination)
+        #expect(!SSHHost(id: 1, name: "x", host: "example.com", user: "-l root").hasSafeDestination)
+        #expect(!SSHHost(id: 1, name: "x", host: "a b").hasSafeDestination)
     }
 }
 

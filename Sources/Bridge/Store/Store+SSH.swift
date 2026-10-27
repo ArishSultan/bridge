@@ -10,25 +10,34 @@ extension Store {
         guard let host = profiles.host(id) else { return .missing }
         let vault = vaultIdentity(for: host)
         if case .vault = host.auth, vault == nil { return .vaultLocked }
-        var command = SSHCommand.interactive(
-            host, savedPassword: host.auth == .password && Keychain.hasPassword(host: host.id),
-            vault: vault, helper: Self.helperPath)
-        command.environment.merge(askpassEnvironment(host: host.id)) { _, new in new }
+        guard host.hasSafeDestination else { return .invalid }
+        let saved = host.auth == .password && Keychain.hasPassword(host: host.id)
+        var command = SSHCommand.interactive(host, savedPassword: saved, vault: vault, helper: Self.helperPath)
+        if saved { command.environment.merge(askpassEnvironment(host: host.id)) { _, new in new } }
         return .ready(command)
     }
 
+    /// How long ssh has to ask for the password after it starts.
+    static let askpassLifetime: TimeInterval = 120
+
     /// Lets one ssh process ask the app for a host's saved password: the socket and a
-    /// single-use nonce, which programs in other terminals never see.
+    /// single-use nonce, which programs in other terminals never see. Only for hosts that sign in
+    /// with a saved password; the nonce expires if ssh doesn't use it soon.
     func askpassEnvironment(host: ID) -> [String: String] {
         guard let socket = shellSocketPath else { return [:] }
+        let now = Date()
+        askpassNonces = askpassNonces.filter { now.timeIntervalSince($0.value.issued) < Self.askpassLifetime }
         let nonce = UUID().uuidString
-        askpassNonces[nonce] = host
+        askpassNonces[nonce] = (host, now)
         return ["BRIDGE_ASKPASS_SOCKET": socket, "BRIDGE_ASKPASS_NONCE": nonce]
     }
 
     func answerAskpass(nonce: String, host: String) -> String {
-        guard let expected = askpassNonces.removeValue(forKey: nonce), "\(expected)" == host else { return "" }
-        return Keychain.password(host: expected) ?? ""
+        guard let expected = askpassNonces.removeValue(forKey: nonce), "\(expected.host)" == host,
+              Date().timeIntervalSince(expected.issued) < Self.askpassLifetime,
+              profiles.host(expected.host)?.auth == .password
+        else { return "" }
+        return Keychain.password(host: expected.host) ?? ""
     }
 
     /// A host's name, for labels.

@@ -1,3 +1,4 @@
+import BridgeCore
 import Foundation
 
 /// A private `ssh-agent` holding the vault's SSH keys in memory, for as long as the vault is
@@ -10,10 +11,12 @@ public final class VaultAgent: @unchecked Sendable {
 
     /// Start the agent (under the helper's guard, so it ends with the app).
     public init(helper: String?) throws {
-        let name = "bridge-vault-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12).lowercased()
-        directory = FileManager.default.temporaryDirectory.appendingPathComponent(name, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
-                                                attributes: [.posixPermissions: 0o700])
+        // Next to the shells' socket: sandboxes can neither write there (to move the agent's
+        // socket somewhere they may connect) nor connect to anything but the shells' socket.
+        let name = "vault-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12).lowercased()
+        try Paths.makePrivateDirectory(Paths.runDirectory)
+        directory = Paths.runDirectory.appendingPathComponent(name, isDirectory: true)
+        try Paths.makePrivateDirectory(directory)
         socket = directory.appendingPathComponent("agent.sock").path
 
         process = Process()

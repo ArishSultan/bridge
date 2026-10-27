@@ -109,7 +109,7 @@ struct BridgeCommands: Commands {
                 .keyboardShortcut("e", modifiers: [.command, .shift])
                 .disabled(controller == nil)
             Button("New Claude Terminal") {
-                if let controller { store.newClaudeTerminal(in: controller.projectID) }
+                if let controller { store.newAgentTerminal(.claude, in: controller.projectID) }
             }
             .keyboardShortcut("c", modifiers: [.command, .option])
             .disabled(controller == nil)

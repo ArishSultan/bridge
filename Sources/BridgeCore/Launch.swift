@@ -24,6 +24,8 @@ public enum Launch {
         case missing
         /// The host signs in with Vaultwarden, which is locked.
         case vaultLocked
+        /// The host's address or user would be read by ssh as an option.
+        case invalid
     }
 
     /// The plan for `spec` in `project`. `ssh` is the resolved host, for SSH terminals.
@@ -47,18 +49,22 @@ public enum Launch {
                 return LaunchPlan(folder: folder, command: command.commandLine, environment: command.environment)
             case .vaultLocked:
                 return failure("Vaultwarden is locked. Unlock it in Global (the lock next to SSH hosts), then press Return.", folder: folder)
+            case .invalid:
+                return failure("This terminal's SSH host has an address or user ssh would read as an option. Fix it in Settings → Hosts.", folder: folder)
             case .missing, nil:
                 return failure("This terminal's SSH host was deleted. Choose another in Edit Terminal.", folder: folder)
             }
         }
     }
 
-    /// Wrap a plan in a terminal's sandbox. Returns the new plan and, for Seatbelt, the policy
-    /// text to write to `policyFile` (the command reads it from there).
+    /// Wrap a plan in a terminal's sandbox. A Seatbelt policy goes on the command line itself
+    /// (`sandbox-exec -p`), never in a file a sandboxed program could replace before the next
+    /// start. `appSocket` is the shells' socket, the one the sandbox may reach outside the project.
     public static func sandboxed(
         _ plan: LaunchPlan, engine: SandboxEngine, spec: TerminalSpec, pane: ID, project: Project,
-        settings: Settings, policyFile: URL, extraReadable: [URL]
-    ) -> (plan: LaunchPlan, policy: String?) {
+        settings: Settings, appSocket: String?, extraReadable: [URL],
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> LaunchPlan {
         var plan = plan
         switch engine {
         case .seatbelt(let seatbelt):
@@ -71,12 +77,27 @@ public enum Launch {
                 plan.environment["BRIDGE_HISTFILE"] = history.path
                 if settings.projectIsHome { plan.environment["BRIDGE_PROJECT_ROOT"] = project.root.path }
             }
+            // Its own temporary folder, and caches of its own for tools that keep runnable code in
+            // theirs (build outputs, downloaded packages, virtualenvs).
+            let temporary = Paths.paneTemporary(pane)
+            let state = Paths.sandboxState(project: project.id)
+            try? Paths.makePrivateDirectory(Paths.paneTemporaryRoot)
+            try? Paths.makePrivateDirectory(temporary)
+            try? FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+            plan.environment["TMPDIR"] = temporary.path + "/"
+            plan.environment["BRIDGE_ZCOMPDUMP"] = state.appendingPathComponent("zcompdump").path
+            plan.environment.merge(sandboxCaches(state)) { _, new in new }
+
             let policy = Sandbox.policy(seatbelt, context: Sandbox.Context(
-                root: project.root, extraWritable: [history], extraReadable: extraReadable))
+                root: project.root, extraWritable: [history, temporary, state], extraReadable: extraReadable,
+                appSocket: appSocket))
             let inner = plan.command ?? "\(quote(loginShell(settings))) -l"
-            // The ssh-agent socket would hand out the user's keys.
-            plan.command = "/usr/bin/env -u SSH_AUTH_SOCK /usr/bin/sandbox-exec -f \(quote(policyFile.path)) \(inner)"
-            return (plan, policy)
+            // The ssh-agent socket would hand out the user's keys, and the app's own environment
+            // may hold tokens (when it was started from a terminal).
+            let unset = (["SSH_AUTH_SOCK"] + secretVariables(environment)).map { "-u \(quote($0))" }.joined(separator: " ")
+            let flat = policy.replacingOccurrences(of: "\n", with: " ")
+            plan.command = "/usr/bin/env \(unset) /usr/bin/sandbox-exec -p \(quote(flat)) \(inner)"
+            return plan
         case .docker(let docker):
             let root = project.root.standardizedFileURL.path
             let folder = plan.folder.standardizedFileURL.path
@@ -87,8 +108,29 @@ public enum Launch {
             plan.command = (["docker"] + args).map(quote).joined(separator: " ")
             // Shell integration doesn't reach into the container.
             plan.environment = [:]
-            return (plan, nil)
+            return plan
         }
+    }
+
+    /// Where tools in a project's sandboxes keep their caches, under `state`.
+    static func sandboxCaches(_ state: URL) -> [String: String] {
+        func at(_ name: String) -> String { state.appendingPathComponent(name).path }
+        return [
+            "XDG_CACHE_HOME": at("cache"), "GOPATH": at("go"), "GOCACHE": at("go-build"),
+            "CARGO_HOME": at("cargo"), "PIP_CACHE_DIR": at("pip"), "UV_CACHE_DIR": at("uv"),
+            "PRE_COMMIT_HOME": at("pre-commit"), "npm_config_store_dir": at("pnpm-store"),
+            "BUN_INSTALL_CACHE_DIR": at("bun"), "YARN_CACHE_FOLDER": at("yarn"),
+        ]
+    }
+
+    /// Variables in the app's environment that look like credentials.
+    static func secretVariables(_ environment: [String: String]) -> [String] {
+        let markers = ["TOKEN", "SECRET", "PASSWORD", "PASSWD", "API_KEY", "APIKEY", "ACCESS_KEY", "CREDENTIAL", "PRIVATE_KEY"]
+        let prefixes = ["AWS_", "GITHUB_", "GH_", "GITLAB_", "OPENAI_", "ANTHROPIC_", "AZURE_", "GOOGLE_APPLICATION"]
+        return environment.keys.filter { name in
+            let upper = name.uppercased()
+            return markers.contains { upper.contains($0) } || prefixes.contains { upper.hasPrefix($0) }
+        }.sorted()
     }
 
     /// A plan that only prints `message` and exits with a failure.

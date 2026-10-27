@@ -53,29 +53,71 @@ public enum VaultClient {
     }
 
     /// The server's base address as typed: `https://` is assumed when no scheme is given, and a
-    /// path is kept (a server behind a reverse proxy at `https://example.com/vault`).
+    /// path is kept (a server behind a reverse proxy at `https://example.com/vault`). Plain
+    /// `http://` is only accepted on this Mac or the local network, where the master password's
+    /// hash and the login token can't be read on the way across the internet.
     public static func serverURL(_ input: String) throws -> String {
         let input = input.trimmingCharacters(in: .whitespaces)
-        var scheme = "https"
-        var rest = input
-        if let range = input.range(of: "://") {
-            scheme = String(input[..<range.lowerBound])
-            rest = String(input[range.upperBound...])
+        let typed = input.contains("://") ? input : "https://" + input
+        guard let components = URLComponents(string: typed), let scheme = components.scheme?.lowercased(),
+              let host = components.host, !host.isEmpty, components.query == nil, components.fragment == nil,
+              components.user == nil, components.password == nil, !input.contains(where: \.isWhitespace)
+        else {
+            throw Failure.rejected("Enter your Vaultwarden address, like vault.example.com.")
         }
         guard scheme == "https" || scheme == "http" else {
             throw Failure.rejected("The server address must start with https:// (or http://).")
         }
-        while rest.hasSuffix("/") { rest.removeLast() }
-        guard !rest.isEmpty, !rest.hasPrefix("/"), !rest.contains(where: \.isWhitespace) else {
+        guard scheme == "https" || isLocal(host) else {
+            throw Failure.rejected("Use https:// for a server outside your network: over http:// your login could be read on the way.")
+        }
+        var path = components.percentEncodedPath
+        while path.hasSuffix("/") { path.removeLast() }
+        let port = components.port.map { ":\($0)" } ?? ""
+        let hostPart = host.contains(":") ? "[\(host)]" : host
+        let server = "\(scheme)://\(hostPart)\(port)\(path)"
+        guard URL(string: server + "/api") != nil else {
             throw Failure.rejected("Enter your Vaultwarden address, like vault.example.com.")
         }
-        return "\(scheme)://\(rest)"
+        return server
+    }
+
+    /// This Mac, or an address on the local network (private ranges, `.local` names, names
+    /// without a dot).
+    static func isLocal(_ host: String) -> Bool {
+        let host = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if host == "localhost" || host.hasSuffix(".local") || host.hasSuffix(".lan") || host.hasSuffix(".home.arpa") { return true }
+        if host == "::1" || host.hasPrefix("fe80:") || host.hasPrefix("fd") || host.hasPrefix("fc") { return host.contains(":") }
+        let octets = host.split(separator: ".").compactMap { UInt8($0) }
+        if octets.count == 4 {
+            switch (octets[0], octets[1]) {
+            case (127, _), (10, _), (192, 168), (169, 254): return true
+            case (172, 16...31): return true
+            case (100, 64...127): return true // carrier-grade NAT, as Tailscale uses
+            default: return false
+            }
+        }
+        return !host.contains(".") && !host.contains(":")
+    }
+
+    /// The address of an endpoint on the server.
+    static func endpoint(_ server: String, _ path: String) throws -> URL {
+        guard let url = URL(string: server + path) else { throw Failure.rejected("the server address is not valid") }
+        return url
+    }
+
+    /// Follows no redirects: a server (or someone in between) mustn't send the login elsewhere.
+    private final class NoRedirects: NSObject, URLSessionTaskDelegate {
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest) async -> URLRequest? {
+            nil
+        }
     }
 
     private static let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 30
-        return URLSession(configuration: configuration)
+        return URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
     }()
 
     /// Log in and decrypt the vault's SSH keys.
@@ -100,7 +142,7 @@ public enum VaultClient {
         }
 
         let access = field(token, "access_token") as? String ?? ""
-        var request = URLRequest(url: URL(string: "\(server)/api/sync?excludeDomains=true")!)
+        var request = URLRequest(url: try endpoint(server, "/api/sync?excludeDomains=true"))
         request.setValue("Bearer \(access)", forHTTPHeaderField: "Authorization")
         let sync = try await json(request, what: "sync response")
         return sshKeys(sync, userKey: userKey)
@@ -112,7 +154,7 @@ public enum VaultClient {
         let kdf = try await prelogin(server: server, email: login.email)
         let masterKey = try VaultCrypto.masterKey(password: login.password, email: login.email, kdf: kdf)
         let hash = VaultCrypto.masterPasswordHash(masterKey: masterKey, password: login.password)
-        var request = URLRequest(url: URL(string: "\(server)/api/two-factor/send-email-login")!)
+        var request = URLRequest(url: try endpoint(server, "/api/two-factor/send-email-login"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
@@ -125,8 +167,8 @@ public enum VaultClient {
 
     static func prelogin(server: String, email: String) async throws -> VaultCrypto.KDF {
         let body = try JSONSerialization.data(withJSONObject: ["email": email.trimmingCharacters(in: .whitespaces)])
-        func request(_ path: String) -> URLRequest {
-            var request = URLRequest(url: URL(string: server + path)!)
+        func request(_ path: String) throws -> URLRequest {
+            var request = URLRequest(url: try endpoint(server, path))
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = body
@@ -135,12 +177,17 @@ public enum VaultClient {
         // Newer servers answer on the identity endpoint, older Vaultwarden on the API one.
         let value: Any
         do {
-            value = try await json(request("/identity/accounts/prelogin"), what: "prelogin")
+            value = try await json(try request("/identity/accounts/prelogin"), what: "prelogin")
         } catch {
-            value = try await json(request("/api/accounts/prelogin"), what: "prelogin")
+            value = try await json(try request("/api/accounts/prelogin"), what: "prelogin")
         }
         guard let kdf = kdf(from: value) else {
             throw Failure.rejected("the server sent key derivation settings this app does not know")
+        }
+        // Within Bitwarden's own limits: a server asking for one round would get a hash that is
+        // cheap to crack, one asking for terabytes of memory would bring the Mac down.
+        guard VaultCrypto.isAcceptable(kdf) else {
+            throw Failure.rejected("the server asked for key derivation settings outside Bitwarden's limits")
         }
         return kdf
     }
@@ -174,7 +221,7 @@ public enum VaultClient {
             form += [("twoFactorProvider", "\(provider)"), ("twoFactorToken", code.trimmingCharacters(in: .whitespaces)),
                      ("twoFactorRemember", "0")]
         }
-        var request = URLRequest(url: URL(string: "\(server)/identity/connect/token")!)
+        var request = URLRequest(url: try endpoint(server, "/identity/connect/token"))
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         var allowed = CharacterSet.alphanumerics

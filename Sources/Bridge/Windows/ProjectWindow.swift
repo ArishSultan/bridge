@@ -265,8 +265,7 @@ struct PaneControls: View {
         let session = store.sessions[pane]
         let spec = project.terminal(pane)
         if let session, let spec {
-            BranchMenu(folder: session.directory.map(URL.init(fileURLWithPath:)) ?? project.folder(spec.folder),
-                       session: session, controller: controller, compact: compact)
+            BranchMenu(folder: branchFolder(session, spec), session: session, controller: controller, compact: compact)
         }
         if let session {
             if session.status.isRunning {
@@ -281,6 +280,17 @@ struct PaneControls: View {
                     .help(startTitle(spec, session))
             }
         }
+    }
+
+    /// The folder the shell last reported, if it is in the project: a program can report any
+    /// folder, and the menu runs git there outside the sandbox.
+    private func branchFolder(_ session: PaneSession, _ spec: TerminalSpec) -> URL {
+        let fallback = project.folder(spec.folder)
+        guard let reported = session.directory else { return fallback }
+        if store.isGlobal(project.id) { return URL(fileURLWithPath: reported) }
+        let root = project.root.standardizedFileURL.path
+        let path = URL(fileURLWithPath: reported).standardizedFileURL.path
+        return path == root || path.hasPrefix(root + "/") ? URL(fileURLWithPath: path) : fallback
     }
 
     private func startTitle(_ spec: TerminalSpec?, _ session: PaneSession) -> String {
@@ -298,51 +308,70 @@ struct BranchMenu: View {
     let controller: WindowController
     var compact = false
 
+    @State private var current: String?
     @State private var branches: [String] = []
     @State private var worktrees: [Git.Worktree] = []
 
     var body: some View {
-        if let current = Git.currentBranch(in: folder) {
-            Menu {
-                ForEach(branches.prefix(40), id: \.self) { branch in
-                    Toggle(branch, isOn: Binding(get: { branch == current }, set: { _ in switchTo(branch) }))
-                }
-                Divider()
-                Button("New Branch…") { session.surface?.typeText("git switch -c ") }
-                if worktrees.count > 1 {
-                    Section("Worktrees") {
-                        ForEach(worktrees, id: \.path) { worktree in
-                            Button("\(worktree.branch ?? "detached") — \(Paths.tilde(worktree.path))") {
-                                Store.shared.openFolder(URL(fileURLWithPath: worktree.path))
-                            }
-                        }
-                    }
-                }
-                let checkedOut = Set(worktrees.compactMap(\.branch))
-                let others = branches.filter { !checkedOut.contains($0) }
-                if !others.isEmpty {
-                    Menu("Open Branch in a New Worktree") {
-                        ForEach(others.prefix(40), id: \.self) { branch in
-                            Button(branch) { openWorktree(branch) }
-                        }
-                    }
-                }
-            } label: {
-                Label(current, systemImage: "arrow.triangle.branch")
-                    .labelStyle(.titleAndIcon)
+        Group {
+            if let current {
+                menu(current)
             }
-            .help("Git branch")
-            .onAppear(perform: reload)
-            .onChange(of: folder) { reload() }
         }
+        .onAppear(perform: reload)
+        .onChange(of: folder) { reload() }
+        // A new prompt may follow a `git switch` typed by hand.
+        .onChange(of: session.atPrompt) { if session.atPrompt { reload() } }
+    }
+
+    private func menu(_ current: String) -> some View {
+        // Switching types a command, so only at a prompt, never into a running program.
+        let atPrompt = session.atPrompt
+        return Menu {
+            ForEach(branches.prefix(40), id: \.self) { branch in
+                Toggle(branch, isOn: Binding(get: { branch == current }, set: { _ in switchTo(branch) }))
+            }
+            .disabled(!atPrompt)
+            Divider()
+            Button("New Branch…") { session.surface?.typeText("git switch -c ") }
+                .disabled(!atPrompt)
+            if !atPrompt {
+                Text("Switching branches works at the shell's prompt")
+            }
+            if worktrees.count > 1 {
+                Section("Worktrees") {
+                    ForEach(worktrees, id: \.path) { worktree in
+                        Button("\(worktree.branch ?? "detached") — \(Paths.tilde(worktree.path))") {
+                            Store.shared.openFolder(URL(fileURLWithPath: worktree.path))
+                        }
+                    }
+                }
+            }
+            let checkedOut = Set(worktrees.compactMap(\.branch))
+            let others = branches.filter { !checkedOut.contains($0) }
+            if !others.isEmpty {
+                Menu("Open Branch in a New Worktree") {
+                    ForEach(others.prefix(40), id: \.self) { branch in
+                        Button(branch) { openWorktree(branch) }
+                    }
+                }
+            }
+        } label: {
+            Label(current, systemImage: "arrow.triangle.branch")
+                .labelStyle(.titleAndIcon)
+        }
+        .help("Git branch")
+        .accessibilityLabel("Git branch \(current)")
     }
 
     private func reload() {
         let folder = folder
         Task.detached {
-            let branches = Git.branches(in: folder)
-            let worktrees = Git.worktrees(in: folder)
+            let current = Git.currentBranch(in: folder)
+            let branches = current == nil ? [] : Git.branches(in: folder)
+            let worktrees = current == nil ? [] : Git.worktrees(in: folder)
             await MainActor.run {
+                self.current = current
                 self.branches = branches
                 self.worktrees = worktrees
             }
@@ -351,19 +380,21 @@ struct BranchMenu: View {
 
     /// Switch branches by running `git switch` at the prompt, so the shell sees it.
     private func switchTo(_ branch: String) {
+        guard session.atPrompt else { return }
         session.surface?.typeText("git switch -- \(Launch.quote(branch))\r")
-        Task {
-            try? await Task.sleep(for: .milliseconds(600))
-            reload()
-        }
     }
 
     private func openWorktree(_ branch: String) {
-        do {
-            let url = try Git.addWorktree(in: folder, branch: branch)
-            Store.shared.openFolder(url)
-        } catch {
-            controller.toast = error.localizedDescription
+        let folder = folder
+        let controller = controller
+        Task.detached {
+            do {
+                let url = try Git.addWorktree(in: folder, branch: branch)
+                await MainActor.run { Store.shared.openFolder(url) }
+            } catch {
+                let message = error.localizedDescription
+                await MainActor.run { controller.toast = message }
+            }
         }
     }
 }

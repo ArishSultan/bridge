@@ -90,17 +90,49 @@ public enum Git {
         return result.status == 0 ? result.output : nil
     }
 
-    private static func execute(_ dir: URL, _ args: [String]) -> (status: Int32, output: String, error: String) {
+    /// Settings that keep the repository from making the app run programs: a sandboxed program
+    /// can write the project's `.git`, and the app runs git outside the sandbox. No hooks (a
+    /// checkout would run post-checkout), no fsmonitor, no pager, and no filters from the
+    /// repository's config.
+    static let safety = [
+        "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.pager=cat",
+    ]
+
+    static func execute(_ dir: URL, _ args: [String]) -> (status: Int32, output: String, error: String) {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["git", "-C", dir.path] + args
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = safety + ["-C", dir.path] + args
+        process.environment = [
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": Paths.home, "GIT_TERMINAL_PROMPT": "0",
+            "GIT_CONFIG_NOSYSTEM": "1", "LC_ALL": "C",
+        ]
         let out = Pipe(), err = Pipe()
         process.standardOutput = out
         process.standardError = err
+        process.standardInput = FileHandle.nullDevice
         do { try process.run() } catch { return (-1, "", error.localizedDescription) }
+        // Read both at once: a full stderr pipe would otherwise block git, and this, forever.
+        let error = PipeReader(err.fileHandleForReading)
         let output = out.fileHandleForReading.readDataToEndOfFile()
-        let error = err.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        return (process.terminationStatus, String(decoding: output, as: UTF8.self), String(decoding: error, as: UTF8.self))
+        return (process.terminationStatus, String(decoding: output, as: UTF8.self), String(decoding: error.wait(), as: UTF8.self))
+    }
+}
+
+/// Reads a pipe to its end on another thread.
+final class PipeReader: @unchecked Sendable {
+    private var data = Data()
+    private let done = DispatchSemaphore(value: 0)
+
+    init(_ handle: FileHandle) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            self.data = handle.readDataToEndOfFile()
+            self.done.signal()
+        }
+    }
+
+    func wait() -> Data {
+        done.wait()
+        return data
     }
 }

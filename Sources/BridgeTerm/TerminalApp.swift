@@ -219,18 +219,26 @@ public final class TerminalApp {
         let string = String(cString: text)
         nonisolated(unsafe) let pointer = userdata
         nonisolated(unsafe) let state = state
+        // Asked later, never inside this call: a modal prompt runs the main loop, which would
+        // call into libghostty while it is still in the middle of this request.
         onMain {
+            // Held until the prompt is answered, so the surface outlives the request.
             let view = TerminalSurfaceView.from(pointer)
-            let confirmed = ClipboardPrompt.confirm(
-                request == GHOSTTY_CLIPBOARD_REQUEST_PASTE ? .paste : .programRead,
-                text: string, window: view.window)
-            guard let surface = view.surface else { return }
-            // Completing with confirmed = true sends the text; an empty string sends nothing.
-            (confirmed ? string : "").withCString {
-                ghostty_surface_complete_clipboard_request(surface, $0, state, true)
+            DispatchQueue.main.async {
+                let confirmed = ClipboardPrompt.confirm(
+                    request == GHOSTTY_CLIPBOARD_REQUEST_PASTE ? .paste : .programRead,
+                    text: string, window: view.window)
+                guard let surface = view.surface else { return }
+                // Completing with confirmed = true sends the text; an empty string sends nothing.
+                (confirmed ? string : "").withCString {
+                    ghostty_surface_complete_clipboard_request(surface, $0, state, true)
+                }
             }
         }
     }
+
+    /// The most a program may put on the clipboard (OSC 52).
+    static let maxProgramClipboard = 1 << 20
 
     private nonisolated static func writeClipboard(
         _ userdata: UnsafeMutableRawPointer?,
@@ -251,10 +259,14 @@ public final class TerminalApp {
         onMain {
             guard let pasteboard = NSPasteboard.terminal(location) else { return }
             if confirm {
-                // A program asked to set the clipboard (OSC 52) and the config wants a prompt.
-                guard let text = items.first(where: { $0.mime == "text/plain" })?.data else { return }
+                // A program asked to set the clipboard (OSC 52; the config asks Bridge every
+                // time, so a copy by the user never comes here). Allowed per terminal: a
+                // sandboxed one can't, unless its sandbox allows the clipboard.
                 let view = TerminalSurfaceView.from(pointer)
-                guard ClipboardPrompt.confirm(.programWrite, text: text, window: view.window) else { return }
+                guard view.allowsProgramClipboardWrite,
+                      let text = items.first(where: { $0.mime == "text/plain" })?.data,
+                      text.utf8.count <= maxProgramClipboard
+                else { return }
                 pasteboard.declareTypes([.string], owner: nil)
                 pasteboard.setString(text, forType: .string)
                 return

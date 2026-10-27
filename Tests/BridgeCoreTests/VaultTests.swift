@@ -52,7 +52,7 @@ struct VaultCryptoTests {
     }
 
     @Test func argon2UsesTheHashedEmailAndMebibytes() throws {
-        let kdf = VaultCrypto.KDF.argon2id(iterations: 1, memoryMiB: 1, parallelism: 1)
+        let kdf = VaultCrypto.KDF.argon2id(iterations: 2, memoryMiB: 16, parallelism: 1)
         let a = try VaultCrypto.masterKey(password: Self.password, email: "User@Example.com", kdf: kdf)
         let b = try VaultCrypto.masterKey(password: Self.password, email: "user@example.com", kdf: kdf)
         #expect(a == b)
@@ -61,6 +61,16 @@ struct VaultCryptoTests {
             try VaultCrypto.masterKey(password: "x", email: "a", kdf: .argon2id(iterations: 0, memoryMiB: 1, parallelism: 1))
         }
     }
+
+    @Test func refusesKDFOutsideBitwardensLimits() {
+        // A server can't make the login hash cheap to crack, or ask for terabytes of memory.
+        #expect(!VaultCrypto.isAcceptable(.pbkdf2(iterations: 1)))
+        #expect(VaultCrypto.isAcceptable(.pbkdf2(iterations: 600_000)))
+        #expect(!VaultCrypto.isAcceptable(.pbkdf2(iterations: .max)))
+        #expect(!VaultCrypto.isAcceptable(.argon2id(iterations: 3, memoryMiB: 4_000_000, parallelism: 4)))
+        #expect(!VaultCrypto.isAcceptable(.argon2id(iterations: 1, memoryMiB: 64, parallelism: 4)))
+        #expect(VaultCrypto.isAcceptable(.argon2id(iterations: 3, memoryMiB: 64, parallelism: 4)))
+    }
 }
 
 struct VaultClientTests {
@@ -68,8 +78,16 @@ struct VaultClientTests {
         #expect(try VaultClient.serverURL("vault.example.com/") == "https://vault.example.com")
         #expect(try VaultClient.serverURL("https://example.com/vault/") == "https://example.com/vault")
         #expect(try VaultClient.serverURL(" http://192.168.1.10:8080 ") == "http://192.168.1.10:8080")
+        #expect(try VaultClient.serverURL("http://localhost:8000/") == "http://localhost:8000")
+        #expect(try VaultClient.serverURL("http://nas.local") == "http://nas.local")
         #expect(throws: VaultClient.Failure.self) { try VaultClient.serverURL("ftp://x") }
         #expect(throws: VaultClient.Failure.self) { try VaultClient.serverURL("") }
+        // Plain http across the internet would expose the login.
+        #expect(throws: VaultClient.Failure.self) { try VaultClient.serverURL("http://vault.example.com") }
+        // Addresses that used to crash the app.
+        for bad in ["https://[abc/x", "https://a:b:c/x", "https://exa%mple.com/x", "https://a:-1/x", "https://a b"] {
+            #expect(throws: VaultClient.Failure.self) { try VaultClient.serverURL(bad) }
+        }
     }
 
     @Test func readsKDFInEitherCase() {

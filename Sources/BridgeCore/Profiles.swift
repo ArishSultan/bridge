@@ -95,13 +95,20 @@ public struct Profiles: Equatable, Sendable {
         return sandbox.id
     }
 
-    /// The Claude sandbox's id, making it (from the Project sandbox) the first time.
-    public mutating func claudeSandbox() -> ID {
-        if let existing = sandboxes.first(where: { $0.name == SandboxProfile.claudeName }) { return existing.id }
-        return upsert(SandboxProfile(id: 0, name: SandboxProfile.claudeName, engine: .forClaude(projectEngine)))
+    /// The Agents sandbox's id, making it (from the Project sandbox) the first time. A "Claude"
+    /// sandbox made by an earlier version counts.
+    public mutating func agentSandbox() -> ID {
+        if let existing = sandboxes.first(where: { $0.name == SandboxProfile.agentsName })
+            ?? sandboxes.first(where: { $0.name == SandboxProfile.claudeName }) {
+            return existing.id
+        }
+        return upsert(SandboxProfile(id: 0, name: SandboxProfile.agentsName, engine: .forAgents(projectEngine)))
     }
 
     mutating func normalize() {
+        // Drop the writable paths older versions defaulted to, which let a sandbox escape.
+        projectSandbox = projectSandbox?.withoutUnsafeWritable()
+        for index in sandboxes.indices { sandboxes[index].engine = sandboxes[index].engine.withoutUnsafeWritable() }
         let maxID = (hosts.flatMap { [$0.id] + $0.forwards.map(\.id) } + sandboxes.map(\.id)).max() ?? 0
         counter = max(counter, maxID + 1)
     }
@@ -231,6 +238,15 @@ public struct SSHHost: Equatable, Sendable, Identifiable, Hashable {
         return user.isEmpty ? host : "\(user)@\(host)"
     }
 
+    /// Whether ssh would take the user and address as a destination, never as options (a host of
+    /// `-oProxyCommand=…` would run a command).
+    public var hasSafeDestination: Bool {
+        let user = user.trimmingCharacters(in: .whitespaces)
+        let host = host.trimmingCharacters(in: .whitespaces)
+        return !host.isEmpty && !host.hasPrefix("-") && !user.hasPrefix("-")
+            && !(host + user).contains(where: { $0.isWhitespace || $0.isNewline })
+    }
+
     /// `user@host:port` for display, leaving out the default port.
     public var address: String { port == 22 ? destination : "\(destination):\(port)" }
 
@@ -318,26 +334,45 @@ public enum SandboxEngine: Equatable, Sendable, Hashable {
         "~/.pyenv", "~/.rbenv", "~/.asdf", "~/.sdkman", "~/go", "~/Library/pnpm",
     ]
 
-    /// What a new Seatbelt profile starts from: tools and agents keep their caches and settings,
-    /// credentials stay out of reach.
+    /// What a new Seatbelt profile starts from: tools keep shared caches that check what they
+    /// store (npm's) and the system's own; credentials stay out of reach. Everything that keeps
+    /// runnable code (Go and Cargo builds, virtualenvs) gets per-project caches instead (see
+    /// `Launch.sandboxCaches`), and what the app always hides or keeps read-only is added on top
+    /// (see `Sandbox.policy`).
     public static var seatbeltDefaults: SandboxEngine {
         .seatbelt(Seatbelt(
-            writable: ["~/.cache", "~/Library/Caches", "~/.npm", "~/.cargo", "~/.claude", "~/.claude.json", "~/.codex", "~/.zcompdump"],
+            writable: ["~/Library/Caches", "~/.npm"],
             hidden: ["~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.netrc", "~/.docker/config.json", "~/.config/gh",
-                     "~/Library/Keychains", "~/.config/bridge/profiles.json", "~/.config/bridge/history.jsonl"],
+                     "~/Library/Keychains", "~/.codex", "~/.claude", "~/.claude.json", "~/.gemini"],
             network: .all, blocked: [], blockKeychain: true))
     }
 
-    /// The Project sandbox, opened up for Claude Code: its login lives in the Keychain, and
-    /// signing in needs a browser.
-    public static func forClaude(_ project: SandboxEngine) -> SandboxEngine {
-        guard case .seatbelt(var seatbelt) = project else { return seatbeltDefaults }
-        seatbelt.hidden.removeAll { $0 == "~/Library/Keychains" }
-        for path in ["~/.claude", "~/.claude.json", "~/Library/Keychains"] where !seatbelt.writable.contains(path) {
+    /// What coding agents keep in the home folder: their settings, sessions and logins.
+    public static let agentFolders = ["~/.claude", "~/.claude.json", "~/.codex", "~/.gemini"]
+
+    /// The Project sandbox, opened up for coding agents (Claude Code, Codex, Gemini): they keep
+    /// their state in the home folder, Claude Code's login lives in the Keychain, and signing in
+    /// needs a browser. Their hooks, commands and settings stay read-only (`Sandbox.neverWritable`),
+    /// so an agent can't make itself run something outside the sandbox later.
+    public static func forAgents(_ project: SandboxEngine) -> SandboxEngine {
+        guard case .seatbelt(var seatbelt) = project else { return forAgents(seatbeltDefaults) }
+        let opened = agentFolders + ["~/Library/Keychains"]
+        seatbelt.hidden.removeAll { opened.contains($0) }
+        for path in opened where !seatbelt.writable.contains(path) {
             seatbelt.writable.append(path)
         }
         seatbelt.blockKeychain = false
         seatbelt.allowOpen = true
+        return .seatbelt(seatbelt)
+    }
+
+    /// Paths older defaults made writable that let a sandbox plant code run outside it.
+    public static let unsafeWritable = ["~/.cargo", "~/.zcompdump", "~/.cache"]
+
+    /// A profile without the unsafe writable paths older versions started from.
+    public func withoutUnsafeWritable() -> SandboxEngine {
+        guard case .seatbelt(var seatbelt) = self else { return self }
+        seatbelt.writable.removeAll { Self.unsafeWritable.contains($0.trimmingCharacters(in: .whitespaces)) }
         return .seatbelt(seatbelt)
     }
 
@@ -352,6 +387,8 @@ public struct SandboxProfile: Equatable, Sendable, Identifiable, Hashable, Codab
     public var engine: SandboxEngine
 
     public static let projectName = "Project"
+    public static let agentsName = "Agents"
+    /// What the Agents sandbox was called before it covered more than Claude Code.
     public static let claudeName = "Claude"
 
     public init(id: ID, name: String, engine: SandboxEngine) {

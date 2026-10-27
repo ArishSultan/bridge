@@ -25,7 +25,7 @@ public struct SSHCommand: Equatable, Sendable {
     /// An interactive session. `savedPassword` says whether the Keychain holds one.
     public static func interactive(_ host: SSHHost, savedPassword: Bool, vault: VaultIdentity?, helper: String?) -> SSHCommand {
         var command = base(host, savedPassword: savedPassword, vault: vault, helper: helper)
-        command.arguments.append(host.destination)
+        command.arguments += ["--", host.destination]
         return command
     }
 
@@ -40,7 +40,7 @@ public struct SSHCommand: Equatable, Sendable {
                        password ? "BatchMode=no" : "BatchMode=yes"] {
             command.arguments += ["-o", option]
         }
-        command.arguments += ["-N", "-T", "-v"] + forward.sshFlag + [host.destination]
+        command.arguments += ["-N", "-T", "-v"] + forward.sshFlag + ["--", host.destination]
         return command
     }
 

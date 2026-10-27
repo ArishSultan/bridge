@@ -28,20 +28,29 @@ public enum VaultCrypto {
         case argon2id(iterations: UInt32, memoryMiB: UInt32, parallelism: UInt32)
     }
 
+    /// Whether key derivation settings are within the limits Bitwarden's own clients accept.
+    public static func isAcceptable(_ kdf: KDF) -> Bool {
+        switch kdf {
+        case .pbkdf2(let iterations):
+            (5_000...2_000_000).contains(iterations)
+        case .argon2id(let iterations, let memoryMiB, let parallelism):
+            (2...10).contains(iterations) && (16...1024).contains(memoryMiB) && (1...16).contains(parallelism)
+        }
+    }
+
     /// The master key: PBKDF2-SHA256 over the password salted with the email, or Argon2id
     /// salted with the email's SHA-256. The email is trimmed and lowercased first.
     public static func masterKey(password: String, email: String, kdf: KDF) throws -> Data {
         let email = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch kdf {
         case .pbkdf2(let iterations):
-            guard iterations > 0 else { throw Failure.badKDF }
+            guard isAcceptable(kdf) else { throw Failure.badKDF }
             return pbkdf2(password: Data(password.utf8), salt: Data(email.utf8), iterations: iterations)
         case .argon2id(let iterations, let memoryMiB, let parallelism):
-            guard iterations > 0, memoryMiB > 0, parallelism > 0 else { throw Failure.badKDF }
+            guard isAcceptable(kdf) else { throw Failure.badKDF }
             let salt = Data(SHA256.hash(data: Data(email.utf8)))
             return try argon2id(password: Data(password.utf8), salt: salt, iterations: iterations,
-                                memoryKiB: memoryMiB.multipliedReportingOverflow(by: 1024).partialValue,
-                                parallelism: parallelism)
+                                memoryKiB: memoryMiB * 1024, parallelism: parallelism)
         }
     }
 
@@ -154,8 +163,10 @@ public enum VaultCrypto {
             case ("2", 3, let macKey?):
                 iv = parts[0]
                 ciphertext = parts[1]
-                let tag = HMAC<SHA256>.authenticationCode(for: iv + ciphertext, using: CryptoKit.SymmetricKey(data: macKey))
-                guard Data(tag) == parts[2] else { throw Failure.tampered }
+                // Compared in constant time, so timing reveals nothing about the right tag.
+                guard HMAC<SHA256>.isValidAuthenticationCode(
+                    parts[2], authenticating: iv + ciphertext, using: CryptoKit.SymmetricKey(data: macKey))
+                else { throw Failure.tampered }
             case ("0", 2, nil):
                 iv = parts[0]
                 ciphertext = parts[1]

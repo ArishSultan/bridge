@@ -54,12 +54,27 @@ public enum Completion {
         public var cwd: URL
         public var executables: [String]
         public var history: History
+        /// For a sandboxed terminal: the only folders whose contents may be listed. The app lists
+        /// them outside the sandbox, so without this a completion would show what's in folders
+        /// the sandbox hides (`~/.ssh/c` → `config`). nil: anywhere.
+        public var readableRoots: [String]?
 
-        public init(line: String, cwd: URL, executables: [String], history: History) {
+        public init(line: String, cwd: URL, executables: [String], history: History, readableRoots: [String]? = nil) {
             self.line = line
             self.cwd = cwd
             self.executables = executables
             self.history = history
+            self.readableRoots = readableRoots
+        }
+    }
+
+    /// Whether `path` is inside one of `roots` (after resolving links and `..`).
+    static func isReadable(_ path: String, roots: [String]?) -> Bool {
+        guard let roots else { return true }
+        let real = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+        return roots.contains { root in
+            let root = URL(fileURLWithPath: root).resolvingSymlinksInPath().standardizedFileURL.path
+            return real == root || real.hasPrefix(root.hasSuffix("/") ? root : root + "/")
         }
     }
 
@@ -67,28 +82,34 @@ public enum Completion {
     static let prefixCommands: Set<String> = ["sudo", "time", "nohup", "exec", "command", "builtin"]
 
     public static func complete(_ context: Context) -> Result {
+        // A folder outside what the terminal may read gives nothing from its contents.
+        guard isReadable(context.cwd.path, roots: context.readableRoots) else {
+            var context = context
+            context.cwd = URL(fileURLWithPath: "/nonexistent-\(UUID().uuidString)")
+            return complete(context)
+        }
         let (words, word) = splitWords(context.line)
         var raw: [Candidate] = []
         let commandIndex = words.firstIndex { !prefixCommands.contains($0) } ?? words.count
         let args = Array(words[min(commandIndex, words.count)...])
 
         if args.isEmpty {
-            raw += isPathLike(word) ? paths(context.cwd, word, directoriesOnly: false) : commands(context)
+            raw += isPathLike(word) ? paths(context.cwd, word, directoriesOnly: false, roots: context.readableRoots) : commands(context)
         } else {
             let command = args[0]
             let position = args.count
             if isPathLike(word) {
-                raw += paths(context.cwd, word, directoriesOnly: command == "cd" || command == "pushd")
+                raw += paths(context.cwd, word, directoriesOnly: command == "cd" || command == "pushd", roots: context.readableRoots)
             } else {
                 let sub = args.count > 1 ? args[1] : nil
                 switch (command, sub) {
                 case ("cd", _), ("pushd", _), ("rmdir", _):
-                    raw += paths(context.cwd, word, directoriesOnly: true)
+                    raw += paths(context.cwd, word, directoriesOnly: true, roots: context.readableRoots)
                 case ("git", nil):
                     raw += spec(git)
                 case ("git", let sub?) where ["checkout", "switch", "merge", "rebase", "branch", "cherry-pick", "log", "diff"].contains(sub) && position == 2:
                     raw += gitBranches(context.cwd)
-                    if ["checkout", "diff", "log"].contains(sub) { raw += paths(context.cwd, word, directoriesOnly: false) }
+                    if ["checkout", "diff", "log"].contains(sub) { raw += paths(context.cwd, word, directoriesOnly: false, roots: context.readableRoots) }
                 case ("git", let sub?) where ["push", "pull", "fetch"].contains(sub) && position == 2:
                     raw += gitRemotes(context.cwd)
                 case ("git", let sub?) where ["push", "pull"].contains(sub) && position == 3:
@@ -113,7 +134,7 @@ public enum Completion {
                     raw += historyArguments(context.history, args: args, word: word)
                 }
                 if raw.isEmpty {
-                    raw += paths(context.cwd, word, directoriesOnly: false)
+                    raw += paths(context.cwd, word, directoriesOnly: false, roots: context.readableRoots)
                 }
             }
         }
@@ -328,7 +349,8 @@ public enum Completion {
         return names.sorted()
     }
 
-    static func paths(_ cwd: URL, _ word: String, directoriesOnly: Bool, home: String = Paths.home) -> [Candidate] {
+    static func paths(_ cwd: URL, _ word: String, directoriesOnly: Bool, roots: [String]? = nil,
+                      home: String = Paths.home) -> [Candidate] {
         let typed = unescape(word)
         let dirPart: String
         let namePart: String
@@ -347,7 +369,8 @@ public enum Completion {
         } else {
             base = cwd.appendingPathComponent(dirPart).path
         }
-        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: base) else { return [] }
+        guard isReadable(base, roots: roots),
+              let entries = try? FileManager.default.contentsOfDirectory(atPath: base) else { return [] }
         let showHidden = namePart.hasPrefix(".")
         var out: [Candidate] = []
         for name in entries.prefix(2000) where showHidden || !name.hasPrefix(".") {
@@ -532,12 +555,13 @@ public enum Completion {
     /// (preferring ones run in this folder), else the rest of the best completion of the last
     /// word. Empty when there's nothing to add.
     public static func suggestion(line: String, cwd: URL, history: History, executables: [String],
-                                  allowed: (HistoryEntry) -> Bool = { _ in true }) -> String {
+                                  readableRoots: [String]? = nil) -> String {
         guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { return "" }
-        if let command = history.suggest(line, cwd: cwd.path, valid: { valid($0, in: cwd) }, allowed: allowed) {
+        if let command = history.suggest(line, cwd: cwd.path, valid: { valid($0, in: cwd) }) {
             return String(command.dropFirst(line.count))
         }
-        let result = complete(Context(line: line, cwd: cwd, executables: executables, history: history))
+        let result = complete(Context(line: line, cwd: cwd, executables: executables, history: history,
+                                      readableRoots: readableRoots))
         guard !result.word.isEmpty,
               let best = result.candidates.first(where: { $0.kind != .argument && $0.replacement.hasPrefix(result.word) }),
               best.replacement.count > result.word.count

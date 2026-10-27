@@ -134,7 +134,7 @@ struct NewTerminalButton: View {
             })
         }
         menu.addItem(ClosureMenuItem("Task…", symbol: "play.circle") { controller.newTerminal(.task) })
-        menu.addItem(ClosureMenuItem("Claude", symbol: "sparkles") { store.newClaudeTerminal(in: project.id) })
+        menu.addItem(ClosureMenuItem("Claude", symbol: "sparkles") { store.newAgentTerminal(.claude, in: project.id) })
         menu.addItem(.separator())
         menu.addItem(.sectionHeader(title: "SSH"))
         if store.profiles.hosts.isEmpty {

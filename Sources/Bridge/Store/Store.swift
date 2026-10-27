@@ -65,13 +65,18 @@ final class Store {
     @ObservationIgnored private var restored = false
 
     /// Every command run in Bridge's terminals (and the shell's own history, if imported).
-    @ObservationIgnored private(set) var history = History()
+    @ObservationIgnored private(set) var history = History() {
+        didSet { historyViews = [:] }
+    }
+    /// Filtered copies of the history (per project for sandboxed terminals, and one for open
+    /// ones), rebuilt when the history grows.
+    @ObservationIgnored var historyViews: [String: (count: Int, history: History)] = [:]
     /// Where shells report prompts and commands.
     @ObservationIgnored private var shellServer: ShellEventServer?
     /// Pane of each shell token.
     @ObservationIgnored private var tokens: [String: ID] = [:]
     /// Single-use nonces for ssh askpass requests, with their host.
-    @ObservationIgnored var askpassNonces: [String: ID] = [:]
+    @ObservationIgnored var askpassNonces: [String: (host: ID, issued: Date)] = [:]
     /// Executable names per PATH, for completing command names.
     @ObservationIgnored var executableCache: [String: [String]] = [:]
     var shellSocketPath: String? { shellServer?.path }
@@ -106,6 +111,7 @@ final class Store {
         } catch {
             NSLog("Bridge: shell integration unavailable: %@", "\(error)")
         }
+        Task.detached(priority: .utility) { Store.cleanUpAfterLastRun() }
         let importShellHistory = settings.importShellHistory
         Task.detached {
             let history = History.load(importShellHistory: importShellHistory)
@@ -522,19 +528,9 @@ final class Store {
         // Sandboxed terminals (never in the Global window, never SSH).
         if case .sandboxed(let profile) = spec.effectiveIsolation, !isGlobal(projectID) {
             let engine = profiles.engine(for: profile)
-            let policyFile = Self.policyDirectory.appendingPathComponent("pane-\(pane).sb")
-            let wrapped = Launch.sandboxed(
+            plan = Launch.sandboxed(
                 plan, engine: engine, spec: spec, pane: pane, project: project, settings: settings,
-                policyFile: policyFile, extraReadable: Self.sandboxReadable)
-            if let policy = wrapped.policy {
-                do {
-                    try FileManager.default.createDirectory(at: Self.policyDirectory, withIntermediateDirectories: true)
-                    try policy.write(to: policyFile, atomically: true, encoding: .utf8)
-                } catch {
-                    plan = Launch.failure("Could not write the sandbox policy: \(error.localizedDescription)", folder: plan.folder)
-                }
-            }
-            if wrapped.policy != nil || engine.isDocker { plan = wrapped.plan }
+                appSocket: shellServer?.path, extraReadable: Self.sandboxReadable)
             session.dockerContainer = engine.isDocker ? Sandbox.containerName(pane) : nil
         }
         let options = TerminalSurfaceView.Options(
@@ -544,6 +540,7 @@ final class Store {
             waitAfterCommand: true)
         do {
             let surface = try TerminalSurfaceView(app: terminal, options: options, context: .window)
+            surface.allowsProgramClipboardWrite = allowsClipboard(spec, in: projectID)
             surface.onFocus = { [weak self] in
                 self?.setFocused(projectID, pane: pane)
                 if let session = self?.sessions[pane] { Attention.shared.clear(session) }
@@ -556,6 +553,34 @@ final class Store {
         } catch {
             NSLog("Bridge: could not start a terminal: %@", "\(error)")
             session.status = .exited(code: nil)
+        }
+    }
+
+    /// Whether programs in a terminal may set the clipboard: not in a sandbox, unless its profile
+    /// allows the clipboard (what a program puts there gets pasted outside the sandbox).
+    private func allowsClipboard(_ spec: TerminalSpec, in projectID: ID) -> Bool {
+        guard case .sandboxed(let profile) = spec.effectiveIsolation, !isGlobal(projectID) else { return true }
+        if case .seatbelt(let seatbelt) = profiles.engine(for: profile) { return seatbelt.allowClipboard }
+        return false
+    }
+
+    /// Open a link a terminal's program printed. From a sandboxed terminal only web and mail
+    /// links open; a file is shown in the Finder rather than opened (opening an app or script
+    /// the sandbox wrote would run it outside the sandbox).
+    func openLink(_ link: String, from session: PaneSession?) {
+        let url = URL(string: link).flatMap { $0.scheme == nil ? nil : $0 } ?? URL(fileURLWithPath: link)
+        let sandboxed = session.map(isSandboxed) ?? false
+        guard sandboxed else {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        switch url.scheme?.lowercased() {
+        case "http", "https", "mailto":
+            NSWorkspace.shared.open(url)
+        case "file":
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        default:
+            if let session { controllers[session.projectID]?.toast = "Links like this don't open from a sandboxed terminal" }
         }
     }
 
@@ -643,8 +668,7 @@ extension Store: TerminalAppDelegate {
             }
             return true
         case .openURL(let link):
-            let url = URL(string: link).flatMap { $0.scheme == nil ? nil : $0 } ?? URL(fileURLWithPath: link)
-            NSWorkspace.shared.open(url)
+            openLink(link, from: session)
             return true
         case .openConfig:
             openSettingsWindow?()

@@ -1,3 +1,4 @@
+import BridgeCore
 import Darwin
 import Foundation
 
@@ -5,7 +6,11 @@ import Foundation
 ///
 /// A message is fields separated by U+001F and ended by a NUL byte. The first message on a
 /// connection is `hello <pane token> <shell>`. A request that expects an answer gets one reply,
-/// in the same format.
+/// in the same format; requests carry a sequence number the reply starts with, so a late reply is
+/// never taken for the answer to the next request.
+///
+/// The socket is in `Paths.runDirectory`, which sandboxes can't write: a sandboxed program can
+/// connect (its shell reports here) but can't move the socket and listen in its place.
 public final class ShellEventServer: @unchecked Sendable {
     public let path: String
     private let listener: Int32
@@ -14,13 +19,18 @@ public final class ShellEventServer: @unchecked Sendable {
     private var connections: [Int32: ShellConnection] = [:]
     private let handler: @Sendable (ShellConnection, [String]) async -> String?
 
+    /// A message longer than this ends its connection: nothing a shell sends comes close.
+    static let maxRecord = 256 * 1024
+    /// More connections than this are refused (each shell keeps one).
+    static let maxConnections = 512
+
     /// Listen at a socket in a private folder for this user and app instance. `handler` runs on
     /// the main actor; what it returns is sent back as the reply.
     public init(handler: @escaping @MainActor @Sendable (ShellConnection, [String]) -> String?) throws {
-        let dir = "/private/tmp/bridge-\(getuid())"
-        mkdir(dir, 0o700)
-        chmod(dir, 0o700)
-        path = "\(dir)/app-\(getpid()).sock"
+        let dir = Paths.runDirectory
+        try Paths.makePrivateDirectory(dir)
+        Self.removeStaleSockets(in: dir)
+        path = dir.appendingPathComponent("app-\(getpid()).sock").path
         unlink(path)
         self.handler = { connection, fields in await handler(connection, fields) }
 
@@ -62,10 +72,28 @@ public final class ShellEventServer: @unchecked Sendable {
         unlink(path)
     }
 
+    /// Sockets left by app instances that are gone (after a crash).
+    private static func removeStaleSockets(in dir: URL) {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        for name in names where name.hasPrefix("app-") && name.hasSuffix(".sock") {
+            guard let pid = Int32(name.dropFirst(4).dropLast(5)), pid != getpid() else { continue }
+            if kill(pid, 0) != 0 && errno == ESRCH { unlink(dir.appendingPathComponent(name).path) }
+        }
+    }
+
     private func acceptConnections() {
         while true {
             let fd = accept(listener, nil, nil)
             guard fd >= 0 else { return }
+            guard connections.count < Self.maxConnections else {
+                close(fd)
+                continue
+            }
+            // Accepted sockets inherit the listener's non-blocking mode; replies are written
+            // whole, so block (with a time limit, for a shell that stops reading).
+            _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK)
+            var limit = timeval(tv_sec: 2, tv_usec: 0)
+            setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &limit, socklen_t(MemoryLayout<timeval>.size))
             var on: Int32 = 1
             setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
             let connection = ShellConnection(fd: fd)
@@ -89,6 +117,11 @@ public final class ShellEventServer: @unchecked Sendable {
             return
         }
         connection.buffer.append(contentsOf: chunk[0..<count])
+        if connection.buffer.count > Self.maxRecord, !connection.buffer.contains(0) {
+            connections[connection.fd] = nil
+            connection.source?.cancel()
+            return
+        }
         while let end = connection.buffer.firstIndex(of: 0) {
             let record = connection.buffer[connection.buffer.startIndex..<end]
             connection.buffer.removeSubrange(connection.buffer.startIndex...end)
@@ -124,10 +157,23 @@ public final class ShellConnection: @unchecked Sendable {
         self.fd = fd
     }
 
+    /// Write a reply whole (a short write would leave the shell waiting for the rest).
     func send(_ text: String) {
         var bytes = Array(text.utf8)
         bytes.append(0)
-        _ = bytes.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+        bytes.withUnsafeBytes { raw in
+            var offset = 0
+            while offset < raw.count {
+                let written = write(fd, raw.baseAddress! + offset, raw.count - offset)
+                if written > 0 {
+                    offset += written
+                } else if written < 0 && errno == EINTR {
+                    continue
+                } else {
+                    return
+                }
+            }
+        }
     }
 }
 

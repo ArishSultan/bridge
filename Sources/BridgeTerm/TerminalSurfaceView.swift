@@ -68,6 +68,9 @@ public final class TerminalSurfaceView: NSView {
     /// Sees every key press first; returning true keeps it from the terminal. The app uses it for
     /// Enter on an exited program, ⌃R, and the completion menu.
     public var interceptKey: ((NSEvent) -> Bool)?
+    /// Whether programs may set the clipboard (OSC 52). Off in sandboxed terminals that don't
+    /// allow the clipboard: what a program puts there would be pasted outside the sandbox.
+    public var allowsProgramClipboardWrite = true
 
     private var cursor: NSCursor = .iBeam
     private var cellSize: CGSize = .zero

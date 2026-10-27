@@ -10,19 +10,23 @@ public struct HistoryEntry: Codable, Equatable, Sendable {
     public var durationMS: UInt64?
     /// Imported from the shell's own history file rather than recorded here.
     public var imported = false
+    /// Recorded in a sandboxed terminal. What a sandboxed program reports can't be trusted (it
+    /// can claim any command ran), so these are never suggested in open terminals.
+    public var sandboxed = false
 
     public init(command: String, cwd: String? = nil, exitCode: Int? = nil, startedAt: UInt64? = nil,
-                durationMS: UInt64? = nil, imported: Bool = false) {
+                durationMS: UInt64? = nil, imported: Bool = false, sandboxed: Bool = false) {
         self.command = command
         self.cwd = cwd
         self.exitCode = exitCode
         self.startedAt = startedAt
         self.durationMS = durationMS
         self.imported = imported
+        self.sandboxed = sandboxed
     }
 
     private enum Keys: String, CodingKey {
-        case command, cwd, exitCode = "exit_code", startedAt = "started_at", durationMS = "duration_ms", imported
+        case command, cwd, exitCode = "exit_code", startedAt = "started_at", durationMS = "duration_ms", imported, sandboxed
     }
 
     public init(from decoder: Decoder) throws {
@@ -33,6 +37,7 @@ public struct HistoryEntry: Codable, Equatable, Sendable {
         startedAt = try c.decodeIfPresent(UInt64.self, forKey: .startedAt)
         durationMS = try c.decodeIfPresent(UInt64.self, forKey: .durationMS)
         imported = try c.decodeIfPresent(Bool.self, forKey: .imported) ?? false
+        sandboxed = try c.decodeIfPresent(Bool.self, forKey: .sandboxed) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -43,6 +48,7 @@ public struct HistoryEntry: Codable, Equatable, Sendable {
         try c.encodeIfPresent(startedAt, forKey: .startedAt)
         try c.encodeIfPresent(durationMS, forKey: .durationMS)
         if imported { try c.encode(true, forKey: .imported) }
+        if sandboxed { try c.encode(true, forKey: .sandboxed) }
     }
 }
 
@@ -109,15 +115,14 @@ public struct History: Sendable {
     /// The command to suggest for a typed prefix, the way fish picks one: the newest match run in
     /// `cwd`, else the newest from anywhere, skipping commands `valid` rejects (like a `cd` into a
     /// folder that doesn't exist here) and multi-line ones.
-    public func suggest(_ prefix: String, cwd: String?, valid: (String) -> Bool = { _ in true },
-                        allowed: (HistoryEntry) -> Bool = { _ in true }) -> String? {
+    public func suggest(_ prefix: String, cwd: String?, valid: (String) -> Bool = { _ in true }) -> String? {
         let maxChecked = 64
         guard !prefix.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
         var checked: [String: Bool] = [:]
         var anywhere: String?
         for entry in entries.reversed() {
             let command = entry.command
-            guard command.count > prefix.count, command.hasPrefix(prefix), !command.contains("\n"), allowed(entry) else {
+            guard command.count > prefix.count, command.hasPrefix(prefix), !command.contains("\n") else {
                 continue
             }
             if checked[command] == nil && checked.count >= maxChecked { break }
@@ -177,7 +182,9 @@ public struct History: Sendable {
                     let meta = line[line.index(line.startIndex, offsetBy: 2)..<semicolon]
                     let parts = meta.split(separator: ":", maxSplits: 1)
                     entry.startedAt = parts.first.flatMap { UInt64($0.trimmingCharacters(in: .whitespaces)) }
-                    entry.durationMS = parts.dropFirst().first.flatMap { UInt64($0.trimmingCharacters(in: .whitespaces)) }.map { $0 * 1000 }
+                    // A corrupt file can hold any number: don't overflow on it.
+                    entry.durationMS = parts.dropFirst().first.flatMap { UInt64($0.trimmingCharacters(in: .whitespaces)) }
+                        .flatMap { $0.multipliedReportingOverflow(by: 1000).overflow ? nil : $0 * 1000 }
                     entry.command = String(line[line.index(after: semicolon)...])
                 } else {
                     entry.command = line

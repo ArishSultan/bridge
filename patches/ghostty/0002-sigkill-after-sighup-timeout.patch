@@ -1,0 +1,21 @@
+diff --git a/src/termio/Exec.zig b/src/termio/Exec.zig
+index af4df3fef..8c59df205 100644
+--- a/src/termio/Exec.zig
++++ b/src/termio/Exec.zig
+@@ -1158,8 +1158,14 @@ const Subprocess = struct {
+         // and repeatedly kill the process group until all
+         // descendents are well and truly dead. We will not rest
+         // until the entire family tree is obliterated.
+-        while (true) {
+-            switch (posix.errno(c.killpg(pgid, c.SIGHUP))) {
++        //
++        // A program that ignores SIGHUP would keep this loop (and the
++        // thread freeing the surface, the app's main thread) going
++        // forever, so after a second it gets SIGKILL instead.
++        var attempts: usize = 0;
++        while (true) : (attempts += 1) {
++            const sig: c_int = if (attempts < 100) c.SIGHUP else c.SIGKILL;
++            switch (posix.errno(c.killpg(pgid, sig))) {
+                 .SUCCESS => log.debug("process group killed pgid={}", .{pgid}),
+                 else => |err| killpg: {
+                     if ((comptime builtin.target.os.tag.isDarwin()) and

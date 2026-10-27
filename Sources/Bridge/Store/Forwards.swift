@@ -76,9 +76,13 @@ final class Forwards {
             fail(id, "Vaultwarden is locked")
             return
         }
+        guard host.hasSafeDestination else {
+            fail(id, "The host's address or user starts with “-”, which ssh would read as an option")
+            return
+        }
         let savedPassword = host.auth == .password && Keychain.hasPassword(host: host.id)
         var command = SSHCommand.forwarding(host, forward, savedPassword: savedPassword, vault: vault, helper: Store.helperPath)
-        command.environment.merge(store.askpassEnvironment(host: host.id)) { _, new in new }
+        if savedPassword { command.environment.merge(store.askpassEnvironment(host: host.id)) { _, new in new } }
 
         let process = Process()
         if let helper = Store.helperPath {

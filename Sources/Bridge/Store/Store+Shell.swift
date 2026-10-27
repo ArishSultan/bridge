@@ -36,10 +36,11 @@ extension Store {
             // bash: the command that ran (without its start time), reported at the next prompt.
             session.running = (fields[2], fields[3], Date())
             finishCommand(session, exitCode: Int(fields[1]), cwd: fields[3], path: fields[4], timed: false)
-        case "suggest" where fields.count >= 4:
-            return suggestion(for: session, line: fields[1], cwd: fields[2], path: fields[3])
-        case "complete" where fields.count >= 4:
-            return complete(for: session, line: fields[1], cwd: fields[2], path: fields[3])
+        // Requests carry a sequence number the reply starts with.
+        case "suggest" where fields.count >= 5:
+            return fields[1] + "\u{1F}" + suggestion(for: session, line: fields[2], cwd: fields[3], path: fields[4])
+        case "complete" where fields.count >= 5:
+            return fields[1] + "\u{1F}" + complete(for: session, line: fields[2], cwd: fields[3], path: fields[4])
         case "line" where fields.count >= 4:
             lineChanged(for: session, line: fields[1], cwd: fields[2], path: fields[3])
         case "closed":
@@ -61,13 +62,15 @@ extension Store {
         guard let running = session.running else { return }
         session.running = nil
 
-        let duration = Date().timeIntervalSince(running.started)
+        // The wall clock can step back while a command runs (a time sync): never below zero.
+        let duration = max(0, Date().timeIntervalSince(running.started))
         record(HistoryEntry(
             command: running.command,
             cwd: running.cwd,
             exitCode: exitCode,
-            startedAt: UInt64(running.started.timeIntervalSince1970),
-            durationMS: timed ? UInt64(duration * 1000) : nil))
+            startedAt: UInt64(max(0, running.started.timeIntervalSince1970)),
+            durationMS: timed ? UInt64(min(duration * 1000, Double(UInt64.max / 2))) : nil,
+            sandboxed: isSandboxed(session)))
 
         if timed, settings.notifyLongCommands, duration >= Double(settings.notifyAfterSecs) {
             let command = running.command.count > 60 ? String(running.command.prefix(57)) + "…" : running.command
@@ -101,11 +104,6 @@ extension Store {
 // MARK: - Sandbox
 
 extension Store {
-    /// Where sandbox policies are written for `sandbox-exec -f`.
-    static var policyDirectory: URL {
-        FileManager.default.temporaryDirectory.appendingPathComponent("bridge-sandbox", isDirectory: true)
-    }
-
     /// What sandboxed shells must be able to read beyond their profile: the integration scripts,
     /// libghostty's terminfo and shell files, and the helper program.
     static var sandboxReadable: [URL] {
@@ -117,13 +115,39 @@ extension Store {
         return urls
     }
 
-    /// A new Claude terminal: a task running `claude` in the Claude sandbox (made from the
-    /// Project sandbox the first time), started right away.
-    func newClaudeTerminal(in projectID: ID) {
-        let sandbox = profiles.claudeSandbox()
+    /// At launch: what the last run left behind when it ended without cleaning up (a crash or
+    /// force quit): sandboxed terminals' temporary folders, and their Docker containers.
+    nonisolated static func cleanUpAfterLastRun() {
+        try? FileManager.default.removeItem(at: Paths.paneTemporaryRoot)
+        let docker = ["/usr/local/bin/docker", "/opt/homebrew/bin/docker"].first { FileManager.default.isExecutableFile(atPath: $0) }
+        guard let docker else { return }
+        let list = Process()
+        list.executableURL = URL(fileURLWithPath: docker)
+        list.arguments = ["ps", "-aq", "--filter", "label=\(Sandbox.containerLabel)"]
+        let output = Pipe()
+        list.standardOutput = output
+        list.standardError = FileHandle.nullDevice
+        guard (try? list.run()) != nil else { return }
+        let ids = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .split(separator: "\n").map(String.init)
+        list.waitUntilExit()
+        guard !ids.isEmpty else { return }
+        let remove = Process()
+        remove.executableURL = URL(fileURLWithPath: docker)
+        remove.arguments = ["rm", "-f"] + ids
+        remove.standardOutput = FileHandle.nullDevice
+        remove.standardError = FileHandle.nullDevice
+        try? remove.run()
+        remove.waitUntilExit()
+    }
+
+    /// A new agent terminal: a task running the agent's command in the Agents sandbox (made
+    /// from the Project sandbox the first time), started right away.
+    func newAgentTerminal(_ agent: Agent, in projectID: ID) {
+        let sandbox = profiles.agentSandbox()
         addItem(projectID, spec: TerminalSpec(
-            name: "Claude",
-            kind: .task(command: "claude", autoStart: true, restartOnExit: false),
-            isolation: isGlobal(projectID) ? .open : .sandboxed(profile: sandbox)))
+            name: agent.name,
+            kind: .task(command: agent.command, autoStart: true, restartOnExit: false),
+            isolation: isGlobal(projectID) ? .open : .sandboxed(profile: sandbox), background: true))
     }
 }

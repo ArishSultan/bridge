@@ -86,6 +86,8 @@ public enum TerminalConfig {
         add("window-inherit-working-directory", true)
         add("scrollback-limit", "\(scrollbackBytes(lines: settings.scrollbackLines))")
         add("clipboard-paste-protection", settings.pasteProtection)
+        // Programs setting the clipboard (OSC 52) come to the app, which decides per terminal.
+        add("clipboard-write", "ask")
         // Bridge installs its own shell integration (see ShellIntegration).
         add("shell-integration", "none")
         add("confirm-close-surface", true)

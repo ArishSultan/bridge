@@ -16,30 +16,111 @@ public enum Sandbox {
     public struct Context: Sendable {
         /// The project folder: writable.
         public var root: URL
-        /// More writable paths (the session's own history file).
+        /// More writable paths: the session's own history file, temporary folder and caches.
         public var extraWritable: [URL] = []
-        /// More readable paths (libghostty's resources, the app's helper).
+        /// More readable paths (libghostty's resources, the app's helper, the shell scripts).
         public var extraReadable: [URL] = []
         public var home: URL
         public var path: String?
-        public var tmpdir: String?
+        /// The app's shell socket: the one socket outside the project and `/tmp` the sandbox may
+        /// connect to.
+        public var appSocket: String?
+        /// The user's cache folder in `/var/folders`, writable for compilers' module caches.
+        public var userCache: String?
+        /// The user's temporary folder (not writable; its `xcrun_db` is readable).
+        public var temporary: String?
 
         public init(root: URL, extraWritable: [URL] = [], extraReadable: [URL] = [],
                     home: URL = URL(fileURLWithPath: Paths.home),
                     path: String? = ProcessInfo.processInfo.environment["PATH"],
-                    tmpdir: String? = ProcessInfo.processInfo.environment["TMPDIR"]) {
+                    appSocket: String? = nil, userCache: String? = Paths.userCacheDirectory,
+                    temporary: String? = Paths.temporaryDirectory.path) {
             self.root = root
             self.extraWritable = extraWritable
             self.extraReadable = extraReadable
             self.home = home
             self.path = path
-            self.tmpdir = tmpdir
+            self.appSocket = appSocket
+            self.userCache = userCache
+            self.temporary = temporary
         }
     }
 
-    /// Files in the app's folder that no sandbox may read or change: the SSH hosts and vault
-    /// account, every command typed, project paths, and the app's settings.
-    static let appPrivate = ["profiles.json", "history.jsonl", "projects.json", "settings.json"]
+    /// Never readable or writable, whatever the profile says: the app's own records (SSH hosts,
+    /// the vault account, every command typed, project paths, settings), other projects'
+    /// sandbox caches, shell histories, and where tools keep credentials.
+    static func alwaysHidden(home: String) -> [String] {
+        [
+            Paths.dataDirectory.path, home + "/.config/bridge", Paths.sandboxStateRoot.path,
+            home + "/.zsh_history", home + "/.bash_history", home + "/.local/share/fish/fish_history",
+            home + "/.ssh", home + "/.aws", home + "/.gnupg", home + "/.netrc", home + "/.git-credentials",
+            home + "/.config/gh", home + "/.docker/config.json", home + "/.kube",
+            home + "/.cargo/credentials", home + "/.cargo/credentials.toml",
+        ]
+    }
+
+    /// Never writable, whatever the profile says: what shells and other programs outside the
+    /// sandbox run or load later. Writing there would let a sandboxed program run code outside
+    /// it (a line in `~/.zshrc`, a binary first on PATH, a LaunchAgent, an agent's hook).
+    static func neverWritable(home: String) -> [String] {
+        [
+            ".zshenv", ".zprofile", ".zshrc", ".zlogin", ".zlogout", ".zsh", ".oh-my-zsh", ".bashrc",
+            ".bash_profile", ".bash_login", ".profile", ".inputrc", ".config/fish", ".config/zsh",
+            ".config/starship.toml", ".gitconfig", ".config/git", ".npmrc", ".yarnrc", ".yarnrc.yml",
+            "Library/LaunchAgents", ".local/bin", "bin", ".cargo/bin", ".cargo/env", ".cargo/config",
+            ".cargo/config.toml", ".claude/settings.json", ".claude/settings.local.json", ".claude/hooks",
+            ".claude/commands", ".claude/agents", ".claude/plugins", ".claude/skills", ".claude/CLAUDE.md",
+            ".codex/config.toml", ".codex/AGENTS.md", ".gemini/settings.json", ".vimrc", ".config/nvim",
+            ".tmux.conf", ".config/tmux", ".config/direnv",
+        ].map { home + "/" + $0 }
+    }
+
+    /// Folders in `/tmp` other programs keep their control sockets in (launchd's ssh-agent, tmux,
+    /// X11): not writable, so their sockets can't be moved, and not connectable.
+    static let protectedTemporary = #"^/private/tmp/(com\.apple\.launchd\.|tmux-|\.X11-unix|uscreens|screens)"#
+
+    /// Where the git repository of a worktree folder lives when it isn't inside it (`git worktree
+    /// add`): its `.git` file points at `<repo>/.git/worktrees/<name>`, and git also needs the
+    /// repository's shared objects and refs. Readable and writable, like the project's own `.git`.
+    static func gitDirectories(of root: URL) -> [String] {
+        let dotGit = root.appendingPathComponent(".git")
+        guard let text = try? String(contentsOf: dotGit, encoding: .utf8), text.hasPrefix("gitdir: ") else { return [] }
+        let target = text.dropFirst("gitdir: ".count).trimmingCharacters(in: .whitespacesAndNewlines)
+        let gitDir = target.hasPrefix("/") ? URL(fileURLWithPath: target) : root.appendingPathComponent(target)
+        var dirs = [resolve(gitDir.standardizedFileURL.path)]
+        let common = (try? String(contentsOf: gitDir.appendingPathComponent("commondir"), encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let common, !common.isEmpty {
+            let url = common.hasPrefix("/") ? URL(fileURLWithPath: common) : gitDir.appendingPathComponent(common)
+            dirs.append(resolve(url.standardizedFileURL.path))
+        }
+        return dirs
+    }
+
+    /// The parts of the project's git repository that make git run programs, or point it at
+    /// another repository that would: hooks, configs (an fsmonitor, a pager, aliases, filters),
+    /// and the links between a worktree and its repository. Never writable, since git outside
+    /// the sandbox would follow them.
+    static func gitControl(of root: URL) -> [String] {
+        let dotGit = resolve(root.appendingPathComponent(".git").path)
+        var isDir: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: dotGit, isDirectory: &isDir)
+        // A worktree's `.git` is a file naming its repository.
+        var paths = exists && !isDir.boolValue ? [dotGit] : []
+        let dirs = (exists && isDir.boolValue ? [dotGit] : []) + gitDirectories(of: root)
+        for dir in dirs {
+            paths += ["hooks", "config", "config.worktree", "commondir", "gitdir"].map { dir + "/" + $0 }
+        }
+        return paths
+    }
+
+    /// Other worktrees' links to their repository, inside a git folder: never writable either.
+    static func gitWorktreeLinks(of root: URL) -> [String] {
+        let dotGit = resolve(root.appendingPathComponent(".git").path)
+        return ([dotGit] + gitDirectories(of: root)).map {
+            "^\(regexEscape($0))/worktrees/[^/]+/(commondir|gitdir|config\\.worktree)$"
+        }
+    }
 
     /// System locations programs need to read: binaries, libraries, frameworks, Homebrew,
     /// settings like the time zone and DNS resolver, and the shell links in `/var/select`.
@@ -58,22 +139,29 @@ public enum Sandbox {
     ]
 
     /// The SBPL policy for a Seatbelt profile.
+    ///
+    /// Rules later in the policy win over earlier ones, so it is built in layers: what may be read
+    /// and written; then what is hidden and what is never writable, whatever came before; then the
+    /// few paths inside hidden folders the session needs back (its own history file, the shell
+    /// scripts); then services and sockets.
     public static func policy(_ s: SandboxEngine.Seatbelt, context: Context) -> String {
         let home = context.home.path
         func expand(_ path: String) -> String {
             path.hasPrefix("~") ? home + path.dropFirst() : path
         }
+        func clean(_ paths: [String]) -> [String] {
+            paths.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.map { resolve(expand($0)) }
+        }
 
-        var writable = [resolve(context.root.path), "/private/tmp", "/private/var/folders"]
-        if let tmp = context.tmpdir { writable.append(resolve(tmp)) }
-        writable += s.writable.map { resolve(expand($0.trimmingCharacters(in: .whitespaces))) }
-        writable += context.extraWritable.map { resolve($0.path) }
+        // Temporary files go in /tmp and the session's own folders; the rest of /var/folders (other
+        // programs' temporary files and sockets, the app's own) stays out of reach.
+        var writable = [resolve(context.root.path), "/private/tmp"]
+        if let cache = context.userCache { writable.append(resolve(cache)) }
+        writable += clean(s.writable) + gitDirectories(of: context.root)
+        let own = context.extraWritable.map { resolve($0.path) }
+        writable += own
 
-        var hidden = s.hidden.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-            .map { resolve(expand($0.trimmingCharacters(in: .whitespaces))) }
-        // The app's own records are never readable, whatever the profile says.
-        let app = context.home.appendingPathComponent(".config/bridge").path
-        hidden += appPrivate.map { resolve(app + "/" + $0) }
+        let hidden = clean(s.hidden) + alwaysHidden(home: home).map(resolve)
 
         var profile = "(version 1)\n(allow default)\n"
         if s.confineReads {
@@ -83,12 +171,16 @@ public enum Sandbox {
             for path in systemReadable {
                 profile += "  (subpath \"\(path)\")\n"
             }
-            let listed = s.readable.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-                .map { resolve(expand($0.trimmingCharacters(in: .whitespaces))) }
             let detected = shellSetupPaths(home: home, path: context.path).map(resolve)
             let extra = context.extraReadable.map { resolve($0.path) }
-            for path in writable + listed + detected + extra {
+            for path in writable + clean(s.readable) + detected + extra {
                 profile += pathRules(path)
+            }
+            // The lookup cache of Apple's command-line tool shims (`/usr/bin/git` and friends):
+            // readable, so they find their tools, but never writable (a changed cache would point
+            // `git` outside the sandbox elsewhere).
+            if let temporary = context.temporary {
+                profile += "  (literal \(quote(resolve(temporary) + "/xcrun_db")))\n"
             }
             let names = ancestorConfig.map(regexEscape).joined(separator: "|")
             var ancestor = (resolve(context.root.path) as NSString).deletingLastPathComponent
@@ -102,17 +194,35 @@ public enum Sandbox {
         for path in writable {
             profile += pathRules(path)
         }
-        // The terminal itself and the usual device files.
+        // The terminal itself (already open; `/dev/tty` reaches it by name) and the usual device
+        // files. Other terminals' ttys are not writable: that would type into them.
         profile += "  (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/tty\") (literal \"/dev/dtracehelper\")\n"
-        profile += "  (regex #\"^/dev/ttys[0-9]+$\") (regex #\"^/dev/fd/\"))\n"
-        if !hidden.isEmpty {
-            // `file-read-data` by name: a deny on `file-read*` loses to the more specific
-            // `allow file-read-data` above, whatever the order, which would leave a hidden path
-            // inside a readable folder readable.
-            profile += "(deny file-read* file-read-data file-write*\n"
-            for path in hidden { profile += "  (subpath \(quote(path)))\n" }
+        profile += "  (regex #\"^/dev/fd/\"))\n"
+
+        // `file-read-data` by name: a deny on `file-read*` loses to the more specific
+        // `allow file-read-data` above, whatever the order, which would leave a hidden path
+        // inside a readable folder readable.
+        profile += "(deny file-read* file-read-data file-write*\n"
+        for path in hidden { profile += "  (subpath \(quote(path)))\n" }
+        profile += ")\n"
+        profile += "(deny file-write*\n"
+        for path in neverWritable(home: home).map(resolve) + gitControl(of: context.root) { profile += pathRules(path) }
+        profile += "  (regex #\"^\(regexEscape(resolve(home)))/\\.zcompdump\")\n"
+        for pattern in gitWorktreeLinks(of: context.root) { profile += "  (regex #\"\(pattern)\")\n" }
+        profile += "  (regex #\"\(protectedTemporary)\"))\n"
+        // Back inside the hidden folders: the session's own files, and the scripts its shell loads.
+        let reread = context.extraReadable.map { resolve($0.path) }
+        if !reread.isEmpty {
+            profile += "(allow file-read* file-read-data\n"
+            for path in reread { profile += pathRules(path) }
             profile += ")\n"
         }
+        if !own.isEmpty {
+            profile += "(allow file-read* file-read-data file-write*\n"
+            for path in own { profile += pathRules(path) }
+            profile += ")\n"
+        }
+
         switch s.network {
         case .all: break
         case .localhost:
@@ -131,16 +241,24 @@ public enum Sandbox {
         }
         // Other programs and services aren't sandboxed, so asking them is closed off too: no
         // scripting other apps, no Spotlight (it would list and search files anywhere), and local
-        // sockets only in /tmp (local databases and Bridge's own), system ones in /var/run (DNS)
-        // and the project, never the user's ssh-agent or a Docker daemon.
+        // sockets only in the project, the session's own folders, /tmp (local databases) and
+        // /var/run (DNS), never the user's ssh-agent, tmux, a Docker daemon or the vault's agent.
+        // The app's own socket is reachable by its exact path only; its folder isn't writable, so
+        // it can't be swapped for another.
         profile += "(deny appleevent-send)\n"
         profile += "(deny mach-lookup (global-name-regex #\"^com\\.apple\\.metadata\\.mds\"))\n"
         profile += "(deny network-outbound (remote unix-socket))\n(allow network-outbound\n"
         profile += "  (remote unix-socket (path-regex #\"^/private/tmp/\"))\n"
         profile += "  (remote unix-socket (path-regex #\"^/private/var/run/\"))\n"
-        profile += "  (remote unix-socket (path-regex #\"^\(regexEscape(resolve(context.root.path)))/\")))\n"
-        profile += "(deny network-outbound\n"
-        profile += "  (remote unix-socket (path-regex #\"^/private/tmp/com\\.apple\\.launchd\\.\"))\n"
+        for path in [resolve(context.root.path)] + own {
+            profile += "  (remote unix-socket (subpath \(quote(path))))\n"
+        }
+        if let socket = context.appSocket {
+            profile += "  (remote unix-socket (literal \(quote(resolve(socket)))))\n"
+        }
+        profile += ")\n(deny network-outbound\n"
+        profile += "  (remote unix-socket (path-regex #\"\(protectedTemporary)\"))\n"
+        profile += "  (remote unix-socket (path-regex #\"^/private/var/run/com\\.apple\\.launchd\\.\"))\n"
         profile += "  (remote unix-socket (path-regex #\"docker\\.sock$\")))\n"
         if !s.allowClipboard {
             profile += "(deny mach-lookup (global-name \"com.apple.pasteboard.1\"))\n"
@@ -156,18 +274,22 @@ public enum Sandbox {
     /// to it). `command` runs instead of a login shell (a task).
     public static func dockerArguments(_ d: SandboxEngine.Docker, pane: ID, root: URL, inside: String, command: String?,
                                        home: String = Paths.home) -> [String] {
-        var args = ["run", "--rm", "-it", "--init", "--name", containerName(pane), "--hostname", "sandbox"]
+        // Labelled, so containers a crash left behind can be found and removed; no gaining
+        // privileges inside (setuid programs).
+        var args = ["run", "--rm", "-it", "--init", "--name", containerName(pane), "--hostname", "sandbox",
+                    "--label", containerLabel, "--security-opt", "no-new-privileges"]
         let workdir = inside.isEmpty || inside == "." ? "/workspace" : "/workspace/\(inside)"
-        args += ["-v", "\(root.path):/workspace", "-w", workdir]
+        // `--mount` rather than `-v`, so a folder with a `:` or `,` in its name can't add options.
+        args += ["--mount", mountSpec(source: root.path, target: "/workspace", readOnly: false), "-w", workdir]
         if !d.network { args += ["--network", "none"] }
         for mount in d.mounts.map({ $0.trimmingCharacters(in: .whitespaces) }) where !mount.isEmpty {
-            if let colon = mount.firstIndex(of: ":") {
-                let host = String(mount[..<colon])
-                let expanded = host.hasPrefix("~") ? home + host.dropFirst() : host
-                args += ["-v", expanded + mount[colon...]]
-            } else {
-                args += ["-v", mount]
-            }
+            // `host:container[:ro]`.
+            var parts = mount.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+            let readOnly = parts.count > 2 && parts.last == "ro"
+            if readOnly { parts.removeLast() }
+            guard parts.count == 2, !parts[0].isEmpty, parts[1].hasPrefix("/") else { continue }
+            let host = parts[0].hasPrefix("~") ? home + parts[0].dropFirst() : parts[0]
+            args += ["--mount", mountSpec(source: host, target: parts[1], readOnly: readOnly)]
         }
         for name in d.env.map({ $0.trimmingCharacters(in: .whitespaces) }) where !name.isEmpty {
             args += ["-e", name]
@@ -184,6 +306,18 @@ public enum Sandbox {
 
     /// The container a Docker pane runs in.
     public static func containerName(_ pane: ID) -> String { "bridge-\(pane)" }
+
+    /// The label on every container Bridge starts.
+    public static let containerLabel = "dev.bridge.sandbox=1"
+
+    /// A bind mount for `--mount`, its fields quoted the way Docker reads them (CSV).
+    static func mountSpec(source: String, target: String, readOnly: Bool) -> String {
+        func field(_ key: String, _ value: String) -> String {
+            let pair = "\(key)=\(value)"
+            return value.contains(where: { ",\"".contains($0) }) ? "\"" + pair.replacingOccurrences(of: "\"", with: "\"\"") + "\"" : pair
+        }
+        return "type=bind," + field("source", source) + "," + field("target", target) + (readOnly ? ",readonly" : "")
+    }
 
     // MARK: - Helpers
 

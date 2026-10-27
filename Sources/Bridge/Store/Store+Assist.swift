@@ -9,8 +9,8 @@ extension Store {
     func suggestion(for session: PaneSession, line: String, cwd: String, path: String) -> String {
         guard settings.autosuggestions else { return "" }
         return Completion.suggestion(
-            line: line, cwd: URL(fileURLWithPath: cwd), history: history, executables: executables(path),
-            allowed: historyFilter(for: session))
+            line: line, cwd: URL(fileURLWithPath: cwd), history: visibleHistory(for: session),
+            executables: executables(path), readableRoots: readableRoots(for: session))
     }
 
     /// Tab: one candidate is inserted by the shell (`replace`, the typed word's length and the
@@ -47,20 +47,55 @@ extension Store {
 
     private func completions(for session: PaneSession, line: String, cwd: String, path: String) -> Completion.Result {
         session.path = path
-        let filter = historyFilter(for: session)
-        let visible = History(entries: history.entries.filter(filter))
         return Completion.complete(Completion.Context(
-            line: line, cwd: URL(fileURLWithPath: cwd), executables: executables(path), history: visible))
+            line: line, cwd: URL(fileURLWithPath: cwd), executables: executables(path),
+            history: visibleHistory(for: session), readableRoots: readableRoots(for: session)))
     }
 
-    /// Sandboxed terminals only see commands run in their own project, so a program in the
-    /// sandbox can't read other history through suggestions.
-    func historyFilter(for session: PaneSession) -> (HistoryEntry) -> Bool {
-        guard let project = project(session.projectID), let spec = project.terminal(session.id),
-              case .sandboxed = spec.effectiveIsolation, !isGlobal(session.projectID)
-        else { return { _ in true } }
-        let root = project.root.standardizedFileURL.path
-        return { entry in entry.cwd.map { $0 == root || $0.hasPrefix(root + "/") } ?? false }
+    /// Whether a terminal runs in a sandbox.
+    func isSandboxed(_ session: PaneSession) -> Bool {
+        guard let spec = project(session.projectID)?.terminal(session.id), case .sandboxed = spec.effectiveIsolation else {
+            return false
+        }
+        return !isGlobal(session.projectID)
+    }
+
+    /// The history a terminal's suggestions and completions draw on. A sandboxed terminal only
+    /// sees commands run in its own project, so a program in the sandbox can't read other
+    /// history through suggestions; an open terminal never sees what sandboxed ones reported,
+    /// which a program in a sandbox could have made up.
+    func visibleHistory(for session: PaneSession) -> History {
+        let key: String
+        let keep: (HistoryEntry) -> Bool
+        if isSandboxed(session), let project = project(session.projectID) {
+            let root = project.root.standardizedFileURL.path
+            key = "project:" + root
+            keep = { entry in entry.cwd.map { $0 == root || $0.hasPrefix(root + "/") } ?? false }
+        } else {
+            key = "open"
+            keep = { !$0.sandboxed }
+        }
+        if let cached = historyViews[key], cached.count == history.entries.count {
+            return cached.history
+        }
+        let view = History(entries: history.entries.filter(keep))
+        historyViews[key] = (history.entries.count, view)
+        return view
+    }
+
+    /// The folders a sandboxed terminal may list (its project, and what its sandbox lets it
+    /// read); nil for an open one.
+    func readableRoots(for session: PaneSession) -> [String]? {
+        guard isSandboxed(session), let project = project(session.projectID),
+              let spec = project.terminal(session.id), case .sandboxed(let profile) = spec.effectiveIsolation
+        else { return nil }
+        var roots = [project.root.path]
+        if case .seatbelt(let seatbelt) = profiles.engine(for: profile) {
+            let hidden = seatbelt.hidden.map(Paths.expandHome) + [Paths.home + "/.ssh", Paths.home + "/.config/bridge"]
+            roots += (seatbelt.writable + seatbelt.readable).map(Paths.expandHome)
+                .filter { path in !hidden.contains { path == $0 || path.hasPrefix($0 + "/") } }
+        }
+        return roots
     }
 
     /// Executable names on a PATH, cached per PATH.
