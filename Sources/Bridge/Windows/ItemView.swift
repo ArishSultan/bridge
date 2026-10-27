@@ -284,16 +284,25 @@ private struct PaneHeader: View {
 }
 
 struct StatusDot: View {
-    let status: PaneSession.Status
+    let color: Color
+    let help: String
+
+    init(color: Color, help: String) {
+        self.color = color
+        self.help = help
+    }
+
+    init(status: PaneSession.Status) {
+        switch status {
+        case .running: self.init(color: .green, help: "Running")
+        case .exited(let code?) where code != 0: self.init(color: .red, help: "Exited with code \(code)")
+        case .exited: self.init(color: .gray, help: "Exited")
+        case .stopped: self.init(color: .gray, help: "Stopped")
+        case .notStarted: self.init(color: .gray, help: "Not started")
+        }
+    }
 
     var body: some View {
-        let (color, help): (Color, String) = switch status {
-        case .running: (.green, "Running")
-        case .exited(let code?) where code != 0: (.red, "Exited with code \(code)")
-        case .exited: (.gray, "Exited")
-        case .stopped: (.gray, "Stopped")
-        case .notStarted: (.gray, "Not started")
-        }
         Circle().fill(color).frame(width: 7, height: 7).help(help)
     }
 }

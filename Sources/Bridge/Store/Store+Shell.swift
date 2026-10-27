@@ -16,6 +16,10 @@ extension Store {
 
     /// Handle one message from a shell; the result, if any, is sent back as the reply.
     func shellMessage(_ connection: ShellConnection, _ fields: [String]) -> String? {
+        // A saved SSH password for the helper, if it has this launch's nonce.
+        if fields.first == "askpass", fields.count >= 3 {
+            return answerAskpass(nonce: fields[1], host: fields[2])
+        }
         guard let kind = fields.first, let token = connection.paneToken, let pane = paneID(token: token),
               let session = sessions[pane]
         else { return nil }

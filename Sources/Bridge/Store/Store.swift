@@ -36,6 +36,14 @@ final class Store {
     private(set) var startupError: String?
     @ObservationIgnored private(set) var terminal: TerminalApp?
 
+    /// Port forwards, running in the background.
+    let forwards = Forwards()
+
+    /// The SSH keys in the unlocked vault (empty while locked).
+    var vaultKeys: [VaultKey] = []
+    /// The Vaultwarden link or unlock sheet is showing.
+    var showVaultSheet = false
+
     /// Running (or stopped) terminals by pane id.
     private(set) var sessions: [ID: PaneSession] = [:]
     /// Projects with a window on screen.
@@ -60,6 +68,9 @@ final class Store {
     @ObservationIgnored private var shellServer: ShellEventServer?
     /// Pane of each shell token.
     @ObservationIgnored private var tokens: [String: ID] = [:]
+    /// Single-use nonces for ssh askpass requests, with their host.
+    @ObservationIgnored var askpassNonces: [String: ID] = [:]
+    var shellSocketPath: String? { shellServer?.path }
 
     private init() {
         var settings = Settings.load()
@@ -97,10 +108,12 @@ final class Store {
             await MainActor.run { Store.shared.history = history }
         }
         Attention.shared.start()
+        Task { @MainActor in Store.shared.forwards.startEnabled() }
     }
 
     /// Before quitting.
     func shutdown() {
+        forwards.stopAll()
         shellServer?.shutdown()
     }
 
@@ -475,7 +488,7 @@ final class Store {
         guard let terminal, let project = project(projectID), let spec = project.terminal(pane) else { return }
         let session = session(pane, in: projectID)
         session.detach(status: .stopped)
-        var plan = Launch.plan(for: spec, in: project, settings: settings)
+        var plan = Launch.plan(for: spec, in: project, settings: settings, ssh: sshTarget(for: spec))
         // Shells get Bridge's shell integration: prompt settings, and reports to the app.
         if case .shell = spec.kind, settings.shellIntegration, let shellServer {
             if let old = session.token { tokens[old] = nil }
@@ -562,7 +575,7 @@ final class Store {
 
     func label(of pane: ID, in project: Project) -> String? {
         guard let spec = project.terminal(pane) else { return nil }
-        return Launch.label(for: spec, title: sessions[pane]?.title ?? "", hostName: { _ in nil })
+        return Launch.label(for: spec, title: sessions[pane]?.title ?? "", hostName: { self.hostName($0) })
     }
 
     /// What an item is called in the sidebar.
@@ -586,6 +599,11 @@ extension Store: TerminalAppDelegate {
         case .childExited(let code):
             guard let session else { return false }
             session.status = .exited(code: Int(code))
+            if code == 255, !session.stoppedByHand,
+               case .ssh(let hostID) = project(session.projectID)?.terminal(session.id)?.kind,
+               let host = profiles.host(hostID) {
+                sshDropped(session, host: host)
+            }
             if !session.stoppedByHand, project(session.projectID)?.terminal(session.id)?.kind.isTask == true {
                 Attention.shared.raise(session, body: code == 0 ? "finished" : "failed (exit code \(code))")
             }
@@ -648,4 +666,10 @@ extension BridgeCore.Layout.Focus {
         case .right: self = .right
         }
     }
+}
+
+/// An SSH key from Vaultwarden, as hosts refer to it.
+struct VaultKey: Identifiable, Equatable {
+    let id: String
+    let name: String
 }

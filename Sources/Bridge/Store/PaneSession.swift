@@ -47,6 +47,9 @@ final class PaneSession: Identifiable {
     @ObservationIgnored var shellDirectory: String?
     /// The Docker container this pane runs in, removed when it stops.
     @ObservationIgnored var dockerContainer: String?
+    /// Reconnecting an SSH session that dropped.
+    @ObservationIgnored var reconnectAttempts = 0
+    @ObservationIgnored var lastReconnect: Date?
 
     init(id: ID, projectID: ID) {
         self.id = id

@@ -17,8 +17,17 @@ public struct LaunchPlan: Equatable, Sendable {
 }
 
 public enum Launch {
-    /// The plan for `spec` in `project`.
-    public static func plan(for spec: TerminalSpec, in project: Project, settings: Settings) -> LaunchPlan {
+    /// How an SSH terminal's host resolved.
+    public enum SSHTarget: Sendable {
+        case ready(SSHCommand)
+        /// The host was deleted.
+        case missing
+        /// The host signs in with Vaultwarden, which is locked.
+        case vaultLocked
+    }
+
+    /// The plan for `spec` in `project`. `ssh` is the resolved host, for SSH terminals.
+    public static func plan(for spec: TerminalSpec, in project: Project, settings: Settings, ssh: SSHTarget? = nil) -> LaunchPlan {
         var folder = project.folder(spec.folder)
         var isDir: ObjCBool = false
         if !FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDir) || !isDir.boolValue {
@@ -33,7 +42,14 @@ public enum Launch {
             // A login shell, so the task sees the same PATH and tools as an interactive one.
             return LaunchPlan(folder: folder, command: "\(quote(loginShell(settings))) -lc \(quote(command))")
         case .ssh:
-            return failure("SSH sessions arrive in a later version of Bridge v2.", folder: folder)
+            switch ssh {
+            case .ready(let command):
+                return LaunchPlan(folder: folder, command: command.commandLine, environment: command.environment)
+            case .vaultLocked:
+                return failure("Vaultwarden is locked. Unlock it in Global (the lock next to SSH hosts), then press Return.", folder: folder)
+            case .missing, nil:
+                return failure("This terminal's SSH host was deleted. Choose another in Edit Terminal.", folder: folder)
+            }
         }
     }
 

@@ -52,6 +52,24 @@ struct ProjectWindow: View {
         .sheet(item: $controller.sandboxSheet) { target in
             SandboxSheet(profileID: target.profile)
         }
+        .sheet(item: $controller.hostSheet) { HostSheet(hostID: $0.id) }
+        .sheet(item: $controller.forwardSheet) { ForwardSheet(hostID: $0.host, forwardID: $0.forward) }
+        .sheet(item: $controller.logSheet) { ForwardLogSheet(forwardID: $0.id) }
+        .overlay(alignment: .bottom) {
+            if let toast = controller.toast {
+                Text(toast)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .glassEffect(in: Capsule())
+                    .padding(20)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .task {
+                        try? await Task.sleep(for: .seconds(4))
+                        controller.toast = nil
+                    }
+            }
+        }
+        .animation(.spring, value: controller.toast)
         .confirmationDialog(
             switchTitle, isPresented: pendingSwitchShown, titleVisibility: .visible
         ) {

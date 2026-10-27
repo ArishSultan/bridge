@@ -63,8 +63,16 @@ struct TerminalSheet: View {
                     }
                 case .ssh:
                     Section("SSH host") {
-                        Text("Add SSH hosts in the Global window. SSH sessions arrive in a later version of Bridge v2.")
-                            .foregroundStyle(.secondary)
+                        if store.profiles.hosts.isEmpty {
+                            Text("Add SSH hosts in the Global window first.").foregroundStyle(.secondary)
+                        } else {
+                            Picker("Host", selection: $host) {
+                                Text("Choose a host").tag(ID?.none)
+                                ForEach(store.profiles.hosts) { host in
+                                    Text("\(host.displayName) · \(host.address)").tag(ID?.some(host.id))
+                                }
+                            }
+                        }
                     }
                 case .shell:
                     EmptyView()

@@ -22,6 +22,21 @@ final class WindowController {
     var renaming: RenameTarget?
     var confirmDeleteItem: ID?
     var confirmRemoveProject = false
+    /// SSH sheets: a host (0 new), a forward of a host (0 new), a forward's log.
+    var hostSheet: Sheet?
+    var forwardSheet: ForwardTarget?
+    var logSheet: Sheet?
+
+    struct Sheet: Identifiable {
+        let id: ID
+    }
+
+    struct ForwardTarget: Identifiable {
+        let host: ID
+        let forward: ID
+        var id: String { "\(host)-\(forward)" }
+    }
+
     /// The sandbox profile being edited: nil none, `.project` the built-in one.
     var sandboxSheet: SandboxTarget?
 
