@@ -1,3 +1,4 @@
+import AppKit
 import BridgeCore
 import SwiftUI
 
@@ -98,7 +99,8 @@ enum GlobalPage: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
-/// The floating + button: a menu of every kind of terminal, each opening its own form.
+/// The floating + button: a menu of every kind of terminal, each opening its own form. It is
+/// the toolbar's glass button style, tinted blue, and opens a native menu where it's clicked.
 struct NewTerminalButton: View {
     let project: Project
     let controller: WindowController
@@ -106,69 +108,67 @@ struct NewTerminalButton: View {
     private var store: Store { .shared }
 
     var body: some View {
-        Menu {
-            Section("New Terminal") {
-                Button {
-                    controller.newTerminal(.shell)
-                } label: {
-                    Label(controller.isGlobal ? "Shell" : "Sandboxed Shell", systemImage: "terminal")
-                }
-                if !controller.isGlobal {
-                    Button {
-                        controller.newTerminal(.openShell)
-                    } label: {
-                        Label("Open Shell", systemImage: "exclamationmark.shield")
-                    }
-                }
-                Button {
-                    controller.newTerminal(.task)
-                } label: {
-                    Label("Task…", systemImage: "play.circle")
-                }
-                Button {
-                    store.newClaudeTerminal(in: project.id)
-                } label: {
-                    Label("Claude", systemImage: "sparkles")
-                }
-            }
-            Section("SSH") {
-                if store.profiles.hosts.isEmpty {
-                    Button {
-                        store.openGlobal()
-                        store.controllers[store.globalID]?.globalPage = .hosts
-                        store.controllers[store.globalID]?.hostSheet = .init(id: 0)
-                    } label: {
-                        Label("Add an SSH Host…", systemImage: "server.rack")
-                    }
-                } else {
-                    Menu {
-                        ForEach(store.profiles.hosts) { host in
-                            Button(host.displayName) {
-                                store.addItem(project.id, spec: TerminalSpec(kind: .ssh(host: host.id), isolation: .open))
-                            }
-                        }
-                    } label: {
-                        Label("SSH Session", systemImage: "server.rack")
-                    }
-                }
-            }
-        } label: {
+        Button(action: showMenu) {
             Image(systemName: "plus")
-                .font(.system(size: 20, weight: .semibold))
-                .frame(width: 30, height: 30)
+                .font(.system(size: 18, weight: .semibold))
+                .frame(width: 26, height: 26)
         }
-        .menuStyle(.button)
-        .menuIndicator(.hidden)
         .buttonStyle(.glassProminent)
         .buttonBorderShape(.circle)
         .controlSize(.extraLarge)
-        .tint(.accentColor)
-        .fixedSize()
-        .shadow(color: .black.opacity(0.25), radius: 8, y: 3)
+        .tint(.blue)
         .help(controller.isGlobal
               ? "New terminal: a shell, a task or an SSH session"
               : "New terminal: a sandboxed or open shell, a task, Claude, or an SSH session")
     }
+
+    private func showMenu() {
+        let menu = NSMenu()
+        menu.addItem(.sectionHeader(title: "New Terminal"))
+        menu.addItem(ClosureMenuItem(controller.isGlobal ? "Shell" : "Sandboxed Shell", symbol: "terminal") {
+            controller.newTerminal(.shell)
+        })
+        if !controller.isGlobal {
+            menu.addItem(ClosureMenuItem("Open Shell", symbol: "exclamationmark.shield") {
+                controller.newTerminal(.openShell)
+            })
+        }
+        menu.addItem(ClosureMenuItem("Task…", symbol: "play.circle") { controller.newTerminal(.task) })
+        menu.addItem(ClosureMenuItem("Claude", symbol: "sparkles") { store.newClaudeTerminal(in: project.id) })
+        menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: "SSH"))
+        if store.profiles.hosts.isEmpty {
+            menu.addItem(ClosureMenuItem("Add an SSH Host…", symbol: "server.rack") {
+                store.openGlobal()
+                store.controllers[store.globalID]?.globalPage = .hosts
+                store.controllers[store.globalID]?.hostSheet = .init(id: 0)
+            })
+        } else {
+            for host in store.profiles.hosts {
+                let projectID = project.id
+                menu.addItem(ClosureMenuItem(host.displayName, symbol: "server.rack") {
+                    store.addItem(projectID, spec: TerminalSpec(kind: .ssh(host: host.id), isolation: .open))
+                })
+            }
+        }
+        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+    }
+}
+
+/// A menu item that runs a closure.
+final class ClosureMenuItem: NSMenuItem {
+    private let handler: () -> Void
+
+    init(_ title: String, symbol: String, handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(run), keyEquivalent: "")
+        target = self
+        image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+    }
+
+    required init(coder: NSCoder) { fatalError("not supported") }
+
+    @objc private func run() { handler() }
 }
 
 /// One item in the sidebar.
