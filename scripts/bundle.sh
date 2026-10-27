@@ -29,6 +29,11 @@ cp "$bin/Bridge" "$app/Contents/MacOS/Bridge"
 # Sparkle, for updates.
 ditto "$bin/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
 install_name_tool -add_rpath @executable_path/../Frameworks "$app/Contents/MacOS/Bridge"
+# SwiftPM records the deployment target (macOS 15) as the SDK the app was built with, and macOS
+# gives apps built with an SDK older than 26 the old look instead of Liquid Glass. Record the SDK
+# it really was built with.
+sdk=$(xcrun --sdk macosx --show-sdk-version)
+vtool -set-build-version macos 15.0 "$sdk" -replace -output "$app/Contents/MacOS/Bridge" "$app/Contents/MacOS/Bridge"
 # Messages from bash, SSH password prompts, and the guard around child processes.
 cp "$bin/bridge-helper" "$app/Contents/Helpers/bridge-helper"
 
