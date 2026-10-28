@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/ArishSultan/bridge/compare/v0.3.0...v0.4.0) (2026-10-28)
+
+
+### Features
+
+* terminal monitor, right-click menu, ⇧↩ for a new line, ⌘B for the sidebar ([6c58977](https://github.com/ArishSultan/bridge/commit/6c5897784095080abe7db269dc8c64a37e43341f))
+
+
+### Fixes
+
+* no "Last login" line, and Mac text editing keys at the prompt ([4ef946e](https://github.com/ArishSultan/bridge/commit/4ef946e5dbefdbee6ff7cdfb9f08fd00ba09f30d))
+
 ## [0.3.0](https://github.com/ArishSultan/bridge/compare/v0.2.0...v0.3.0) (2026-10-27)
 
 
