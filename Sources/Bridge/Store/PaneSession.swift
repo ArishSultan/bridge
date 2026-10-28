@@ -40,6 +40,8 @@ final class PaneSession: Identifiable {
     private(set) var searching = false
     private(set) var searchTotal: Int?
     private(set) var searchSelected: Int?
+    /// The process the terminal runs (reported by `bridge-helper pane`), for its monitor.
+    @ObservationIgnored var rootPID: pid_t?
     /// Why the terminal couldn't start, shown instead of its output.
     var launchError: String?
     /// What its sandbox refused (newest last), and how many since the user last looked.

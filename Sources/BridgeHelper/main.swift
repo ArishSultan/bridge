@@ -5,6 +5,9 @@ import Foundation
 //
 //   bridge-helper send <socket> <fields…> [-- <fields…>]…
 //       Deliver messages to the app's shell socket (for bash, which has no unix sockets).
+//   bridge-helper pane <socket> <token> -- <program> <args…>
+//       Tell the app which process a terminal runs (this one: it then becomes the program, with
+//       the same pid), for its monitor.
 //   bridge-helper sandbox <policy> <program> <args…>
 //       Run a program in a Seatbelt sandbox, after putting the terminal it runs in (stdin's tty)
 //       into the policy where it says @BRIDGE_TTY@.
@@ -202,6 +205,16 @@ case "send":
     }
     for message in messages where !message.isEmpty { write(fd, message) }
     close(fd)
+case "pane":
+    guard arguments.count >= 5, arguments[3] == "--" else { fail("usage: pane <socket> <token> -- <program> <args…>") }
+    if let fd = connectSocket(arguments[1]) {
+        write(fd, ["pid", arguments[2], "\(getpid())"])
+        close(fd)
+    }
+    let program = Array(arguments.dropFirst(4))
+    var cArgs = program.map { strdup($0) } + [nil]
+    execvp(program[0], &cArgs)
+    fail("could not start \(program[0]): \(String(cString: strerror(errno)))")
 case "sandbox":
     guard arguments.count >= 3 else { fail("usage: sandbox <policy> <program> <args…>") }
     // No terminal: a path no tty has, so none is allowed.

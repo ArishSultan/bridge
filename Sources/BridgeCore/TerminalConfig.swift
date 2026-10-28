@@ -117,7 +117,8 @@ public enum TerminalConfig {
 
     /// Text editing keys, sent as what shells understand: ⌘←/→ line start and end, ⌥←/→ a word,
     /// ⌘⌫ / ⌥⌫ delete to the line start / a word back, ⌘⌦ / ⌥⌦ to the line end / a word on.
-    /// With ⇧ they select (by character, word, or to the line start or end): standard xterm
+    /// ⇧↩ adds a line to what's typed. With ⇧ the arrows select (by character, word, or to
+    /// the line start or end): standard xterm
     /// sequences, with ⌘ sent as the "meta" modifier, which Bridge's zsh integration reads.
     static let editingKeys: [(String, String)] = [
         ("super+left", "text:\\x01"), ("super+right", "text:\\x05"),
@@ -127,6 +128,9 @@ public enum TerminalConfig {
         ("shift+left", "csi:1;2D"), ("shift+right", "csi:1;2C"),
         ("alt+shift+left", "csi:1;4D"), ("alt+shift+right", "csi:1;4C"),
         ("super+shift+left", "csi:1;10D"), ("super+shift+right", "csi:1;10C"),
+        // ⇧↩ starts a new line without running: Esc-Return, which Claude Code, Codex and Gemini
+        // read as a new line, and Bridge's zsh integration too.
+        ("shift+enter", "text:\\x1b\\r"),
     ]
 
     /// The entries as the text of a Ghostty config file.

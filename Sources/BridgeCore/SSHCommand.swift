@@ -44,6 +44,20 @@ public struct SSHCommand: Equatable, Sendable {
         return command
     }
 
+    /// A connection that only runs `script` on the server (its monitor's readings), never asking
+    /// for anything on a terminal: unknown host keys are refused (the user's own session
+    /// accepts them first), and without a saved password nothing may prompt.
+    public static func remoteStats(_ host: SSHHost, savedPassword: Bool, vault: VaultIdentity?, helper: String?,
+                                   script: String) -> SSHCommand {
+        var command = base(host, savedPassword: savedPassword, vault: vault, helper: helper)
+        let password = savedPassword && host.auth == .password
+        for option in ["ConnectTimeout=15", "StrictHostKeyChecking=yes", password ? "BatchMode=no" : "BatchMode=yes"] {
+            command.arguments += ["-o", option]
+        }
+        command.arguments += ["-T", "--", host.destination, "sh -c \(Launch.singleQuote(script))"]
+        return command
+    }
+
     /// Options shared by every connection to a host: port, keep-alives and how it signs in.
     static func base(_ host: SSHHost, savedPassword: Bool, vault: VaultIdentity?, helper: String?) -> SSHCommand {
         var args: [String] = []

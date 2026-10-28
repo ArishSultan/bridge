@@ -117,6 +117,7 @@ private struct ItemRow: View {
 
     @State private var draft = ""
     @FocusState private var editing: Bool
+    @Environment(\.openWindow) private var openWindow
 
     private var store: Store { .shared }
 
@@ -178,6 +179,7 @@ private struct ItemRow: View {
         .contextMenu {
             if let pane = view.single, let spec = single {
                 Button("Edit Terminal…") { controller.edit(pane) }
+                Button("Show Monitor") { openWindow(id: "monitor", value: pane) }
                 Button("Rename") { controller.renaming = .item(view.id) }
                 Toggle("Keep Alive", isOn: Binding(
                     get: { spec.background },

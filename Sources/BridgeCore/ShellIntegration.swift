@@ -481,7 +481,8 @@ public enum ShellIntegration {
       local keymap
       for keymap in emacs viins; do
         _bridge_bind $keymap '^A' beginning-of-line '^E' end-of-line '^[b' backward-word '^[f' forward-word \
-          '^U' backward-kill-line '^W' backward-kill-word '^K' kill-line '^[d' kill-word
+          '^U' backward-kill-line '^W' backward-kill-word '^K' kill-line '^[d' kill-word \
+          '^[^M' self-insert-unmeta
       done
     }
 

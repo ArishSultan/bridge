@@ -80,6 +80,8 @@ final class Store {
     @ObservationIgnored private var shellServer: ShellEventServer?
     /// Pane of each shell token.
     @ObservationIgnored private var tokens: [String: ID] = [:]
+    /// Pane of each process-report token (`bridge-helper pane`), until it reports.
+    @ObservationIgnored var pidTokens: [String: ID] = [:]
     /// Single-use nonces for ssh askpass requests, with their host.
     @ObservationIgnored var askpassNonces: [String: (host: ID, issued: Date)] = [:]
     /// Executable names per PATH, for completing command names.
@@ -688,6 +690,14 @@ final class Store {
             if !engine.isDocker { DenialMonitor.shared.start() }
             session.dockerContainer = engine.isDocker ? Sandbox.containerName(pane) : nil
         }
+        // Through the helper, which tells the app the terminal's process (for its monitor) and
+        // then becomes the program.
+        if let helper = Self.helperPath, let socket = shellServer?.path {
+            let token = UUID().uuidString
+            pidTokens[token] = pane
+            let program = plan.command ?? "\(Launch.quote(Launch.loginShell(settings))) -l"
+            plan.command = "\(Launch.quote(helper)) pane \(Launch.quote(socket)) \(Launch.quote(token)) -- \(program)"
+        }
         let options = TerminalSurfaceView.Options(
             workingDirectory: plan.folder.path,
             command: plan.command,
@@ -696,6 +706,8 @@ final class Store {
         do {
             let surface = try TerminalSurfaceView(app: terminal, options: options, context: .window)
             surface.allowsProgramClipboardWrite = allowsClipboard(spec, in: projectID)
+            surface.openLink = { [weak self, weak session] link in self?.openLink(link, from: session) }
+            surface.contextMenuItems = { [weak self] in self?.contextMenuItems(for: pane, in: projectID) ?? [] }
             surface.onPaneDrag = { [weak self] phase in
                 self?.paneDragged(phase, onto: pane, in: projectID) ?? false
             }
@@ -743,6 +755,32 @@ final class Store {
         default:
             if let session { controllers[session.projectID]?.toast = "Links like this don't open from a sandboxed terminal" }
         }
+    }
+
+    /// Set by the project windows: opens a terminal's monitor.
+    @ObservationIgnored var openMonitor: ((ID) -> Void)?
+
+    /// Bridge's part of a terminal's right-click menu.
+    private func contextMenuItems(for pane: ID, in projectID: ID) -> [NSMenuItem] {
+        guard let controller = controllers[projectID] else { return [] }
+        var items: [NSMenuItem] = [
+            ClosureMenuItem("Split Right", symbol: "rectangle.split.2x1") {
+                controller.focus(pane)
+                controller.split(.horizontal)
+            },
+            ClosureMenuItem("Split Down", symbol: "rectangle.split.1x2") {
+                controller.focus(pane)
+                controller.split(.vertical)
+            },
+            ClosureMenuItem("Show Monitor", symbol: "chart.xyaxis.line") { [weak self] in self?.openMonitor?(pane) },
+        ]
+        items.append(.separator())
+        items.append(ClosureMenuItem("Edit Terminal…", symbol: "pencil") { controller.edit(pane) })
+        items.append(ClosureMenuItem("Close Terminal", symbol: "xmark") {
+            controller.focus(pane)
+            controller.closeFocused()
+        })
+        return items
     }
 
     /// Stop a running terminal, keeping its pane.

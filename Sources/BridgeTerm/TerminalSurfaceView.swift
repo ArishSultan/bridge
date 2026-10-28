@@ -749,6 +749,86 @@ public final class TerminalSurfaceView: NSView {
     @objc func pasteAsPlainText(_ sender: Any?) { perform(binding: "paste_from_clipboard") }
     public override func selectAll(_ sender: Any?) { perform(binding: "select_all") }
 
+    /// The text selected in the terminal, if any.
+    public var selectedText: String? {
+        guard let surface, ghostty_surface_has_selection(surface) else { return nil }
+        var text = ghostty_text_s()
+        guard ghostty_surface_read_selection(surface, &text) else { return nil }
+        defer { ghostty_surface_free_text(surface, &text) }
+        let string = String(cString: text.text)
+        return string.isEmpty ? nil : string
+    }
+
+    @objc public func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(copy(_:)), #selector(copyPlainText(_:)): selectedText != nil
+        case #selector(paste(_:)), #selector(pasteAsPlainText(_:)): NSPasteboard.general.string(forType: .string) != nil
+        default: true
+        }
+    }
+
+    // MARK: - Context menu
+
+    /// What the app adds to the right-click menu, after the text items (splits, the monitor…).
+    public var contextMenuItems: (() -> [NSMenuItem])?
+    /// Opens a link the user chose in the menu (the app decides how, as for ⌘-click).
+    public var openLink: ((String) -> Void)?
+
+    /// Right-click: what can be done with the text and the link under the pointer. A program that
+    /// takes the mouse (vim, htop) gets the click instead (see `rightMouseDown`).
+    public override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu()
+        menu.autoenablesItems = true
+        if let link = hoveredLink {
+            menu.addItem(action("Open Link") { [weak self] in self?.openLink?(link) })
+            menu.addItem(action("Copy Link") {
+                NSPasteboard.general.declareTypes([.string], owner: nil)
+                NSPasteboard.general.setString(link, forType: .string)
+            })
+            menu.addItem(.separator())
+        }
+        menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "c").target = self
+        menu.addItem(withTitle: "Copy as Plain Text", action: #selector(copyPlainText(_:)), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "v").target = self
+        menu.addItem(withTitle: "Select All", action: #selector(selectAll(_:)), keyEquivalent: "a").target = self
+        if let text = selectedText?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty, text.count < 200 {
+            let point = convert(event.locationInWindow, from: nil)
+            let short = text.count > 24 ? String(text.prefix(24)) + "…" : text
+            menu.addItem(.separator())
+            menu.addItem(action("Look Up “\(short)”") { [weak self] in
+                self?.showDefinition(for: NSAttributedString(string: text), at: point)
+            })
+            menu.addItem(action("Search the Web for “\(short)”") {
+                var components = URLComponents(string: "https://duckduckgo.com/")
+                components?.queryItems = [URLQueryItem(name: "q", value: text)]
+                if let url = components?.url { NSWorkspace.shared.open(url) }
+            })
+        }
+        menu.addItem(.separator())
+        menu.addItem(action("Find…") { [weak self] in self?.startSearch() })
+        menu.addItem(action("Clear") { [weak self] in _ = self?.perform(binding: "clear_screen") })
+        if let extra = contextMenuItems?(), !extra.isEmpty {
+            menu.addItem(.separator())
+            extra.forEach(menu.addItem)
+        }
+        return menu
+    }
+
+    @objc func copyPlainText(_ sender: Any?) {
+        guard let text = selectedText else { return }
+        NSPasteboard.general.declareTypes([.string], owner: nil)
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func action(_ title: String, _ run: @escaping () -> Void) -> NSMenuItem {
+        let target = MenuAction(run)
+        let item = NSMenuItem(title: title, action: #selector(MenuAction.trigger), keyEquivalent: "")
+        item.target = target
+        // The menu item holds its target weakly; this keeps it as long as the item.
+        item.representedObject = target
+        return item
+    }
+
     // MARK: - Drag and drop
 
     private func isPaneDrag(_ sender: any NSDraggingInfo) -> Bool {
@@ -959,4 +1039,15 @@ extension Optional where Wrapped == String {
         case .none: body(nil)
         }
     }
+}
+
+/// A menu item's action as a closure.
+private final class MenuAction: NSObject {
+    private let run: () -> Void
+
+    init(_ run: @escaping () -> Void) {
+        self.run = run
+    }
+
+    @objc func trigger() { run() }
 }

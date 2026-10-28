@@ -20,6 +20,13 @@ extension Store {
         if fields.first == "askpass", fields.count >= 3 {
             return answerAskpass(nonce: fields[1], host: fields[2])
         }
+        // A terminal's process, from `bridge-helper pane` (once per start).
+        if fields.first == "pid", fields.count >= 3 {
+            if let pane = pidTokens.removeValue(forKey: fields[1]), let pid = pid_t(fields[2]), pid > 1 {
+                sessions[pane]?.rootPID = pid
+            }
+            return nil
+        }
         guard let kind = fields.first, let token = connection.paneToken, let pane = paneID(token: token),
               let session = sessions[pane]
         else { return nil }

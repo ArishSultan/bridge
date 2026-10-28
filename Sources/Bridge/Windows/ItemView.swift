@@ -267,6 +267,7 @@ private struct PaneHeader: View {
     @State private var hovering = false
     @State private var draft = ""
     @FocusState private var editing: Bool
+    @Environment(\.openWindow) private var openWindow
 
     private var store: Store { .shared }
 
@@ -323,6 +324,7 @@ private struct PaneHeader: View {
         .onDrag { PaneDrag(project: project.id, item: item, pane: pane).provider() }
         .contextMenu {
             Button("Edit Terminal…") { controller.edit(pane) }
+            Button("Show Monitor") { openWindow(id: "monitor", value: pane) }
             Button("Rename") { controller.renaming = .pane(pane) }
             Toggle("Keep Alive", isOn: Binding(
                 get: { spec.background }, set: { store.setKeepAlive(project.id, panes: [pane], $0) }))

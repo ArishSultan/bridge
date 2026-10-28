@@ -186,6 +186,25 @@ struct ZshEditingTests {
         #expect(try run(#"garbage words\x15echo RESULT:fresh"#) == "fresh")
     }
 
+    @Test func shiftReturnStartsANewLine() throws {
+        // ⇧↩ sends Esc-Return, which inserts a newline instead of running the line. (Its output
+        // can't tell the two apart, so this asks zsh what the key does, in both keymaps.)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("zsh-bind-\(UUID())")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("editing.zsh")
+        try ShellIntegration.editingZsh.write(to: file, atomically: true, encoding: .utf8)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-f", "-c", "zmodload zsh/zle; source \(file.path); bindkey -M emacs '^[^M'; bindkey -M viins '^[^M'"]
+        let output = Pipe()
+        process.standardOutput = output
+        try process.run()
+        process.waitUntilExit()
+        let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        #expect(text == "\"^[^M\" self-insert-unmeta\n\"^[^M\" self-insert-unmeta\n")
+    }
+
     @Test func optionBackspaceDeletesAWord() throws {
         #expect(try run(#"echo RESULT:keep drop\x17\x7f"#) == "keep")
     }

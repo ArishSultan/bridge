@@ -100,6 +100,7 @@ struct ProjectWindow: View {
             store.closeWelcomeWindow = { [dismissWindow] in dismissWindow(id: "welcome") }
             store.openWelcomeWindow = { [openWindow] in openWindow(id: "welcome") }
             store.openSettingsWindow = { [openSettings] in openSettings() }
+            store.openMonitor = { [openWindow] pane in openWindow(id: "monitor", value: pane) }
             store.windowOpened(projectID, controller: controller)
             if let active = project.active ?? project.views.first?.id {
                 store.activate(projectID, item: active)
@@ -246,6 +247,14 @@ private struct ProjectToolbar: ToolbarContent {
                 .help("Add a terminal to the right (⌘D)")
             Button("Split Down", systemImage: "rectangle.split.1x2") { controller.split(.vertical) }
                 .help("Add a terminal below (⌘⇧D)")
+        }
+
+        ToolbarItem {
+            Button("Monitor", systemImage: "chart.xyaxis.line") {
+                if let pane = controller.focusedPane { openWindow(id: "monitor", value: pane) }
+            }
+            .help("What this terminal uses: CPU, memory, and for SSH the server, for agents their limits (⌥⌘I)")
+            .disabled(controller.focusedPane == nil)
         }
 
         ToolbarItem {

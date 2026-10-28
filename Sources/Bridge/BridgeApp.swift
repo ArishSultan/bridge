@@ -37,6 +37,14 @@ struct BridgeApp: App {
         .defaultLaunchBehavior(.suppressed)
         .commands { BridgeCommands() }
 
+        // A terminal's monitor: what it runs and uses, live.
+        WindowGroup("Monitor", id: "monitor", for: ID.self) { $pane in
+            if let pane { MonitorWindow(pane: pane) }
+        }
+        .defaultSize(width: 480, height: 640)
+        .restorationBehavior(.disabled)
+        .defaultLaunchBehavior(.suppressed)
+
         Settings {
             SettingsView()
         }
@@ -170,7 +178,19 @@ struct BridgeCommands: Commands {
                 .disabled(noTerminal)
         }
 
+        // ⌘B, as in Xcode, Finder and Mail.
+        CommandGroup(replacing: .sidebar) {
+            Button(store.sidebarOpen ? "Hide Sidebar" : "Show Sidebar") { store.sidebarOpen.toggle() }
+                .keyboardShortcut("b")
+                .disabled(noWindow)
+        }
+
         CommandGroup(after: .sidebar) {
+            Button("Show Monitor") {
+                if let pane = controller?.focusedPane { openWindow(id: "monitor", value: pane) }
+            }
+            .keyboardShortcut("i", modifiers: [.command, .option])
+            .disabled(controller?.focusedPane == nil)
             Divider()
             Button("Bigger") { _ = controller?.focusedSurface?.perform(binding: "increase_font_size:1") }
                 .keyboardShortcut("+")
