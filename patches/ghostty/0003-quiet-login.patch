@@ -1,0 +1,16 @@
+diff --git a/src/termio/Exec.zig b/src/termio/Exec.zig
+index af4df3fef..7a2e6d4be 100644
+--- a/src/termio/Exec.zig
++++ b/src/termio/Exec.zig
+@@ -1498,7 +1504,10 @@ fn execCommand(
+         //
+         // Awesome.
+         try args.append(alloc, "/usr/bin/login");
+-        if (hush) try args.append(alloc, "-q");
++        // Bridge: never print login(1)'s "Last login: …" line, with or without a
++        // .hushlogin (`hush` is still read above, for the upstream code's sake).
++        _ = hush;
++        try args.append(alloc, "-q");
+         try args.append(alloc, "-flp");
+         try args.append(alloc, username);
+ 

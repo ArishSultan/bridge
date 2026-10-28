@@ -99,6 +99,10 @@ public enum TerminalConfig {
         for trigger in appShortcuts {
             add("keybind", "\(trigger)=unbind")
         }
+        // Editing the command line as in a Mac text field.
+        for (trigger, action) in editingKeys {
+            add("keybind", "\(trigger)=\(action)")
+        }
 
         return entries
     }
@@ -110,6 +114,20 @@ public enum TerminalConfig {
         "super+[", "super+]", "super+shift+[", "super+shift+]",
         "ctrl+tab", "ctrl+shift+tab", "super+b", "super+shift+g", "super+shift+e", "super+alt+c",
     ] + (1...9).map { "super+\($0)" }
+
+    /// Text editing keys, sent as what shells understand: ⌘←/→ line start and end, ⌥←/→ a word,
+    /// ⌘⌫ / ⌥⌫ delete to the line start / a word back, ⌘⌦ / ⌥⌦ to the line end / a word on.
+    /// With ⇧ they select (by character, word, or to the line start or end): standard xterm
+    /// sequences, with ⌘ sent as the "meta" modifier, which Bridge's zsh integration reads.
+    static let editingKeys: [(String, String)] = [
+        ("super+left", "text:\\x01"), ("super+right", "text:\\x05"),
+        ("alt+left", "esc:b"), ("alt+right", "esc:f"),
+        ("super+backspace", "text:\\x15"), ("alt+backspace", "text:\\x17"),
+        ("super+delete", "text:\\x0b"), ("alt+delete", "esc:d"),
+        ("shift+left", "csi:1;2D"), ("shift+right", "csi:1;2C"),
+        ("alt+shift+left", "csi:1;4D"), ("alt+shift+right", "csi:1;4C"),
+        ("super+shift+left", "csi:1;10D"), ("super+shift+right", "csi:1;10C"),
+    ]
 
     /// The entries as the text of a Ghostty config file.
     public static func fileContents(for settings: Settings, dark: Bool, naturalLineHeight: Double = 1.2) -> String {

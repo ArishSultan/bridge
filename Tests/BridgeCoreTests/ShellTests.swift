@@ -133,3 +133,60 @@ struct PromptTests {
         #expect(ShellIntegration.bashPromptFile(settings, starshipConfig: "/x").contains("starship init bash"))
     }
 }
+
+/// The zsh editing keys, in a real interactive zsh on a pseudo-terminal: keys go in as the
+/// terminal sends them, and what the edited command line prints comes out.
+struct ZshEditingTests {
+    private func run(_ keys: String) throws -> String {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("zsh-edit-\(UUID())")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try ShellIntegration.editingZsh.write(to: dir.appendingPathComponent("editing.zsh"), atomically: true, encoding: .utf8)
+        let driver = """
+        zmodload zsh/zpty
+        zpty -b z 'zsh -f -i'
+        zpty -w -n z $'PS1=""; bindkey -e; source \(dir.path)/editing.zsh; print READY\\r'
+        zpty -r -m z line '*READY*' || exit 2
+        zpty -w -n z $'\(keys)\\r'
+        for i in {1..40}; do
+          # The command's output, not zsh echoing the line being typed (which has it too).
+          zpty -r -t z line && [[ $line == RESULT:* ]] && { print -r -- ${${line#RESULT:}%%[[:space:]]*}; exit 0 }
+          sleep 0.05
+        done
+        exit 1
+        """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-f", "-c", driver]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        return String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    @Test func selectionIsReplacedByTyping() throws {
+        // ⌥⇧← selects "world", typing replaces it.
+        #expect(try run(#"echo RESULT:world\e[1;4Dthere"#) == "there")
+    }
+
+    @Test func selectionToLineStartIsDeleted() throws {
+        // ⌘⇧← selects the whole line, ⌫ deletes it.
+        #expect(try run(#"echo junk\e[1;10D\x7fecho RESULT:clean"#) == "clean")
+    }
+
+    @Test func arrowEndsTheSelection() throws {
+        // ⇧← selects "b", ← ends the selection before it, then typing inserts there.
+        #expect(try run(#"echo RESULT:ab\e[1;2D\e[DX"#) == "aXb")
+    }
+
+    @Test func commandBackspaceDeletesToLineStart() throws {
+        #expect(try run(#"garbage words\x15echo RESULT:fresh"#) == "fresh")
+    }
+
+    @Test func optionBackspaceDeletesAWord() throws {
+        #expect(try run(#"echo RESULT:keep drop\x17\x7f"#) == "keep")
+    }
+}
